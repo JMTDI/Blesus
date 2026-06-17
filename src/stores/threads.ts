@@ -28,6 +28,13 @@ import {
 } from "@/lib/db";
 import { isSnoozedNow, snoozeKeyword, SNOOZE_REMOVE_GLOBS } from "@/lib/snooze";
 import { ruleMatches, type RuleAction, type RuleSpec } from "@/lib/rules";
+
+/**
+ * Folder IDs for which a markRead IMAP call is currently in-flight.
+ * The periodic badge tick uses this to avoid re-inflating the badge to the
+ * server's stale \Unseen count while \Seen is still being confirmed.
+ */
+export const markReadInFlight = new Set<number>();
 import { useAccountsStore } from "@/stores/accounts";
 import { useUiStore } from "@/stores/ui";
 import { toast } from "@/stores/toasts";
@@ -701,6 +708,7 @@ async function runRuleAction(
       if (folderPath === action.folderPath) return false; // already in destination
       await ipc.imapMoveUid(config, folderPath, action.folderPath, uid);
       void deleteMessage(folderId, uid).catch(() => {});
+      void deleteSearchIndexEntry(accountId, folderPath, uid).catch(() => {});
       return true;
     }
     case "mark_read": {
@@ -722,6 +730,7 @@ async function runRuleAction(
       if (folderPath === trashPath) return false; // already in trash
       await ipc.imapMoveUid(config, folderPath, trashPath, uid);
       void deleteMessage(folderId, uid).catch(() => {});
+      void deleteSearchIndexEntry(accountId, folderPath, uid).catch(() => {});
       return true;
     }
     default: break;
@@ -753,11 +762,18 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
 
     // For silent (background) refreshes, preserve the page count so that
     // "oldest first" auto-paging isn't reset. For explicit navigations,
-    // always reset to page 1.
+    // reset to page 1 UNLESS the gap-fill has already paged further ahead —
+    // in that case preserve the higher count so the DB re-read limit covers
+    // all gap-fill pages and the visible list includes them.
     const prevPageCount = pageCountByFolder.get(key) ?? 1;
     if (!silent) {
-      pageCountByFolder.set(key, 1);
-      savePageCounts(pageCountByFolder);
+      // Only reset to 1 if we haven't gap-filled beyond page 1.
+      // The gap-fill updates pageCountByFolder as it goes, so if it's > 1
+      // we want to keep that so the Phase 3 DB re-read covers all fetched rows.
+      if (prevPageCount <= 1) {
+        pageCountByFolder.set(key, 1);
+        savePageCounts(pageCountByFolder);
+      }
     }
     // The DB limit to use when re-reading — covers all pages already loaded.
     const dbReadLimit = Math.max(1000, prevPageCount * PAGE_SIZE * 4);
@@ -986,6 +1002,148 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
                 savePageCounts(pageCountByFolder);
               }
             }
+
+            // ── Background gap-fill ───────────────────────────────────────
+            // After loading the initial page of 50 from IMAP, check if the DB
+            // already contains older messages that would create a gap in the
+            // visible list (e.g. May 30 → Feb 17, skipping March/April).
+            // If so, silently fetch all the pages between the fresh top-50 and
+            // the existing backlog so the list is contiguous.
+            //
+            // Detection: find the oldest timestamp in the fresh IMAP page, then
+            // check if the DB contains any message older than that. If it does,
+            // and the gap is more than 7 days, page through IMAP until we've
+            // bridged it. Cap at MAX_GAP_PAGES to avoid runaway fetching on
+            // very large mailboxes.
+            if (!silent && folderId > 0 && summaries.length >= PAGE_SIZE) {
+              const GAP_THRESHOLD_SECS = 7 * 24 * 3600; // 7 days min gap to fill
+              const MAX_GAP_PAGES = 60; // up to 3000 messages per fill session
+
+              // Sort all DB rows by received_at DESC (already sorted, but ensure)
+              const sortedRows = all.filter((r) => (r.received_at ?? 0) > 0)
+                .map((r) => r.received_at as number)
+                .sort((a, b) => b - a);
+
+              // Find the largest internal gap in the DB rows — the discontinuity
+              // we need to fill. Also check the gap between IMAP fresh page bottom
+              // and the top of the DB backlog.
+              const freshDates = summaries.map((s) => s.date ?? 0).filter((d) => d > 0);
+              const oldestFreshTs = freshDates.length > 0 ? Math.min(...freshDates) : 0;
+
+              // Find where the biggest gap is: either between fresh IMAP bottom
+              // and DB top, or between consecutive DB rows.
+              let biggestGapSize = 0;
+              let gapStartTs = 0; // the newer side of the gap (we fetch from here backwards)
+
+              // Check gap between fresh IMAP page bottom and first DB row below it
+              if (oldestFreshTs > 0 && sortedRows.length > 0) {
+                const dbRowsBelowFresh = sortedRows.filter((ts) => ts < oldestFreshTs);
+                if (dbRowsBelowFresh.length > 0) {
+                  const topBacklog = dbRowsBelowFresh[0]!;
+                  const gapSize = oldestFreshTs - topBacklog;
+                  if (gapSize > biggestGapSize) {
+                    biggestGapSize = gapSize;
+                    gapStartTs = oldestFreshTs;
+                  }
+                }
+              }
+
+              // Check for internal gaps within DB rows
+              for (let i = 0; i < sortedRows.length - 1; i++) {
+                const newer = sortedRows[i]!;
+                const older = sortedRows[i + 1]!;
+                const gap = newer - older;
+                if (gap > biggestGapSize) {
+                  biggestGapSize = gap;
+                  gapStartTs = newer; // gap starts right after this row
+                }
+              }
+
+              // Fire gap-fill if the biggest internal gap is more than 7 days
+              if (biggestGapSize > GAP_THRESHOLD_SECS && gapStartTs > 0) {
+                // Figure out which IMAP page offset corresponds to gapStartTs.
+                // The IMAP server delivers messages newest-first: offset 0 = newest.
+                // We need to find roughly how many messages are newer than gapStartTs
+                // on the server (= the offset to start fetching from).
+                // Use the DB count of messages newer than gapStartTs as the offset.
+                const rowsNewerThanGap = sortedRows.filter((ts) => ts > gapStartTs).length;
+                const startPage = Math.max(1, Math.floor(rowsNewerThanGap / PAGE_SIZE));
+                void (async () => {
+                  let gapPage = startPage; // start at the page where the gap begins
+                  const maxPage = startPage + MAX_GAP_PAGES;
+                  while (gapPage < maxPage && !isStale()) {
+                    const gapOffset = gapPage * PAGE_SIZE;
+                    let gapSummaries: MessageSummary[];
+                    try {
+                      gapSummaries = await ipc.imapFetchMessages(config, folderPath, PAGE_SIZE, gapOffset);
+                    } catch {
+                      break;
+                    }
+                    if (gapSummaries.length === 0) break;
+
+                    await Promise.all(gapSummaries.map((s) =>
+                      upsertMessageSummary({
+                        accountId,
+                        folderId,
+                        imapUid: s.uid,
+                        messageIdHeader: s.messageId || null,
+                        inReplyTo: s.inReplyTo || null,
+                        referencesHeader: (s.references ?? []).length > 0 ? (s.references ?? []).join(" ") : null,
+                        fromAddress: s.from,
+                        toAddresses: s.to.join(", "),
+                        ccAddresses: s.cc && s.cc.length > 0 ? s.cc.join(", ") : null,
+                        bccAddresses: s.bcc && s.bcc.length > 0 ? s.bcc.join(", ") : null,
+                        subject: s.subject,
+                        snippet: s.snippet,
+                        receivedAt: s.date,
+                        flags: s.flags,
+                        isUnread: !s.flags.includes("Seen"),
+                        isStarred: s.flags.includes("Flagged"),
+                        isImportant: false,
+                        hasAttachments: s.hasAttachments,
+                        isBulk: s.isBulk,
+                        isAuto: s.isAuto,
+                      }).catch(() => {}),
+                    ));
+
+                    // Advance page counter so loadMore won't re-fetch these pages
+                    const latestPage = pageCountByFolder.get(key) ?? 1;
+                    if (gapPage + 1 > latestPage) {
+                      pageCountByFolder.set(key, gapPage + 1);
+                      savePageCounts(pageCountByFolder);
+                    }
+
+                    // Check if this page has bridged the gap:
+                    // the oldest message in this page is before the gap start,
+                    // meaning we've fetched through the gap region.
+                    const pageDates = gapSummaries.map((s) => s.date ?? 0).filter((d) => d > 0);
+                    const oldestPageTs = pageDates.length > 0 ? Math.min(...pageDates) : 0;
+                    // Find the older side of the gap in the DB
+                    const olderSideOfGap = sortedRows.filter((ts) => ts < gapStartTs - biggestGapSize + GAP_THRESHOLD_SECS);
+                    const olderEdgeTs = olderSideOfGap.length > 0 ? (olderSideOfGap[0] ?? 0) : 0;
+                    if (oldestPageTs > 0 && olderEdgeTs > 0 && oldestPageTs <= olderEdgeTs + GAP_THRESHOLD_SECS) {
+                      gapPage++;
+                      break;
+                    }
+
+                    if (gapSummaries.length < PAGE_SIZE) break; // server ran out
+                    gapPage++;
+                  }
+
+                  // Re-read DB with expanded limit to show the newly filled pages
+                  if (!isStale()) {
+                    try {
+                      const newLimit = Math.max(dbReadLimit, (pageCountByFolder.get(key) ?? 1) * PAGE_SIZE * 2);
+                      const gapFilled = await listMessagesForFolder(folderId, newLimit);
+                      if (gapFilled.length > 0 && !isStale()) {
+                        const rawGap = groupMessagesIntoThreads(gapFilled, accountId, folderId, new Set(get().standaloneUids[String(accountId)] ?? []));
+                        set({ threads: applyMergeGroups(rawGap, get().mergeGroups, get().standaloneUids), rawThreads: rawGap });
+                      }
+                    } catch { /* best-effort */ }
+                  }
+                })();
+              }
+            }
           }
         } catch (err) {
           console.warn("fetchFolder: post-sync DB re-read failed", err);
@@ -1146,7 +1304,6 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
         PAGE_SIZE,
         offset,
       );
-
       // Persist the new page so the merged view + future cold-start include it.
       if (folderId > 0) {
         const upserts: Promise<void>[] = [];
@@ -1667,12 +1824,16 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
           updateMessageFlags(thread.folderId, uid, { isUnread: false }).catch(() => {}),
         )
       : [];
+    // Mark this folder as having an in-flight \Seen operation so the periodic
+    // badge tick doesn't re-inflate the count from a stale server STATUS.
+    markReadInFlight.add(thread.folderId);
     try {
       const [{ config, folderPath }] = await Promise.all([
         sessionFor(thread),
         Promise.all(dbWritePromises),
       ]);
       await ipc.imapSetFlagsMulti(config, folderPath, uidsToMark, ["\\Seen"], "add");
+      markReadInFlight.delete(thread.folderId);
       // Re-sync badge count from the server to catch any drift.
       try {
         const status = await ipc.imapFolderStatus(config, folderPath);
@@ -1692,6 +1853,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
         // STATUS failure is non-fatal; the periodic resync will correct it.
       }
     } catch (err) {
+      markReadInFlight.delete(thread.folderId);
       flog.error(`markRead failed on server (id=${id}):`, err);
       // Revert all related threads.
       useAccountsStore.getState().adjustFolderUnread(thread.folderId, +unreadDelta);
@@ -1911,6 +2073,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
       if (thread.folderId > 0) {
         for (const uid of uidsToMove) {
           void deleteMessage(thread.folderId, uid).catch(() => {});
+          void deleteSearchIndexEntry(thread.accountId, folderPath, uid).catch(() => {});
         }
       }
       toast.success(`Moved to ${displayPathName(destPath)}`);
@@ -1962,6 +2125,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
       if (thread.folderId > 0) {
         for (const uid of uidsToMove) {
           void deleteMessage(thread.folderId, uid).catch(() => {});
+          void deleteSearchIndexEntry(thread.accountId, folderPath, uid).catch(() => {});
         }
       }
       toast.success("Archived");
@@ -2319,6 +2483,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
       await ipc.imapMoveUid(config, folderPath, dest, thread.id);
       if (thread.folderId > 0) {
         void deleteMessage(thread.folderId, thread.id).catch(() => {});
+        void deleteSearchIndexEntry(thread.accountId, folderPath, thread.id).catch(() => {});
       }
       toast.success("Moved to Spam");
     } catch (err) {
@@ -2352,6 +2517,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
       await ipc.imapMoveUid(config, folderPath, dest, thread.id);
       if (thread.folderId > 0) {
         void deleteMessage(thread.folderId, thread.id).catch(() => {});
+        void deleteSearchIndexEntry(thread.accountId, folderPath, thread.id).catch(() => {});
       }
       toast.success("Moved to Inbox");
     } catch (err) {
@@ -2386,6 +2552,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
         await ipc.imapMoveUid(config, folderPath, dest, thread.id);
         if (thread.folderId > 0) {
           void deleteMessage(thread.folderId, thread.id).catch(() => {});
+          void deleteSearchIndexEntry(thread.accountId, folderPath, thread.id).catch(() => {});
         }
       } catch (err) {
         failed.push(thread);
@@ -2429,6 +2596,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
         await ipc.imapMoveUid(config, folderPath, dest, thread.id);
         if (thread.folderId > 0) {
           void deleteMessage(thread.folderId, thread.id).catch(() => {});
+          void deleteSearchIndexEntry(thread.accountId, folderPath, thread.id).catch(() => {});
         }
       } catch (err) {
         failed.push(thread);

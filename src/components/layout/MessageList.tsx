@@ -278,9 +278,16 @@ export function MessageList() {
       setThreads([]);
       fetchFolder(activeAccountId, activeFolder.path, activeFolder.id);
     }
-    // Changing folder should drop any bulk selection from the previous folder.
+    // Changing folder should drop any bulk selection and search query from the previous folder.
     clearSelection();
-  }, [activeAccountId, activeFolder?.id, activeFolder?.path, fetchFolder, clearSelection, setThreads]);
+    setListQuery("");
+  }, [activeAccountId, activeFolder?.id, activeFolder?.path, fetchFolder, clearSelection, setThreads, setListQuery]);
+
+  // Also clear search query whenever activeFolderId changes (covers cases where
+  // activeFolder object reference doesn't change but the folder ID does).
+  useEffect(() => {
+    setListQuery("");
+  }, [activeFolderId, setListQuery]);
 
   // Load all starred messages from DB when the starred view is activated.
   useEffect(() => {

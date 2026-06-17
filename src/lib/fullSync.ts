@@ -1,5 +1,5 @@
 import { ipc } from "@/lib/ipc";
-import { getAccountSecrets, listAccounts, upsertSearchIndex } from "@/lib/db";
+import { getAccountSecrets, listAccounts, pruneSearchIndex, upsertSearchIndex } from "@/lib/db";
 
 export interface FullSyncProgress {
   foldersDone: number;
@@ -84,6 +84,7 @@ export async function indexAllMailForSearch(
 
       // Paginate through all messages newest-first, PAGE_SIZE at a time.
       // imapFetchMessages(offset) skips the most-recent `offset` messages.
+      const indexedUids: number[] = [];
       let offset = 0;
       while (offset < total) {
         if (signal?.aborted) return;
@@ -113,6 +114,7 @@ export async function indexAllMailForSearch(
             snippet: s.snippet,
             receivedAt: s.date,
           }).catch(() => {});
+          indexedUids.push(s.uid);
           messagesIndexed++;
         }
 
@@ -127,6 +129,10 @@ export async function indexAllMailForSearch(
 
         if (summaries.length < PAGE_SIZE) break;
       }
+
+      // Prune stale search_index entries for UIDs no longer in this folder
+      // (e.g. messages that were moved or deleted since the last sync).
+      await pruneSearchIndex(account.id, folder.path, indexedUids).catch(() => {});
 
       foldersDone++;
     }

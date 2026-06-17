@@ -39,6 +39,8 @@ import {
   listRules,
   upsertRule,
   getAllConversationCounts,
+  listMessagesForFolder,
+  pruneSearchIndex,
   type StoredAccount,
   type StoredRule,
 } from "@/lib/db";
@@ -913,6 +915,11 @@ function RefreshAllFoldersRow() {
       try {
         setStatus(`Syncing ${folder.name}… (${foldersDone + 1}/${realFolders.length})`);
         await fetchFolder(folder.accountId, folder.path, folder.id, { silent: true });
+        // Prune stale search_index entries — remove any UIDs that are no longer
+        // in the messages table for this folder (e.g. moved or deleted messages).
+        const messages = await listMessagesForFolder(folder.id, 999_999).catch(() => []);
+        const uids = messages.map((m) => m.imap_uid);
+        await pruneSearchIndex(folder.accountId, folder.path, uids).catch(() => {});
       } catch (err) {
         console.warn(`Refresh failed for folder ${folder.path}:`, err);
       }
@@ -938,7 +945,7 @@ function RefreshAllFoldersRow() {
   return (
     <Row
       label="Refresh all folders"
-      hint="Re-syncs every folder across all accounts from the server and rebuilds all thread message lists."
+      hint="Re-syncs every folder across all accounts from the server, rebuilds all thread message lists, and cleans up the search index by removing stale entries for messages that have been moved or deleted."
     >
       <button
         type="button"
@@ -1431,7 +1438,7 @@ function KeyboardSection() {
       items: [
         { keys: ["/"], description: "Open search overlay" },
         { keys: ["Ctrl", "K"], description: "Open search overlay" },
-        { keys: ["Ctrl", "Q"], description: "Quit Cursus (bypasses 'Close to tray')" },
+        { keys: ["Ctrl", "Q"], description: "Quit Blesus (bypasses 'Close to tray')" },
       ],
     },
   ];
