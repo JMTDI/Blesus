@@ -45,19 +45,17 @@ function PersistentMediaPlayer() {
   // Reset error when track changes
   useEffect(() => { setMediaError(null); }, [track]);
 
-  // autoPlay is blocked by WebView2 after async loading; call .play() programmatically.
-  useEffect(() => {
-    if (objectUrl && mediaRef.current) {
-      console.log('[Audio] calling play(), src:', objectUrl.slice(0, 60));
-      mediaRef.current.play()
-        .then(() => console.log('[Audio] play() resolved — playing'))
-        .catch((e: unknown) => {
-          const msg = (e instanceof Error) ? `${e.name}: ${e.message}` : String(e);
-          console.warn('[Audio] play() rejected:', msg);
-          setMediaError(`Autoplay blocked — ${msg}`);
-        });
-    }
-  }, [objectUrl]);
+  // autoPlay is blocked by WebView2 after async src assignment; trigger play
+  // from onCanPlay so the element is guaranteed to be in the DOM with a loaded src.
+  function handleCanPlay() {
+    const el = mediaRef.current;
+    if (!el) return;
+    el.play().catch((e: unknown) => {
+      const msg = (e instanceof Error) ? `${e.name}: ${e.message}` : String(e);
+      console.warn('[Audio] play() rejected:', msg);
+      setMediaError(`Autoplay blocked — ${msg}`);
+    });
+  }
 
   if (!track) return null;
 
@@ -101,10 +99,10 @@ function PersistentMediaPlayer() {
           ref={mediaRef}
           key={objectUrl}
           controls
-          autoPlay
           src={objectUrl}
           className="w-full px-4 pb-2"
           style={{ display: "block" }}
+          onCanPlay={handleCanPlay}
           onError={() => {
             const el = mediaRef.current;
             const code = el?.error?.code ?? "?";
@@ -118,10 +116,10 @@ function PersistentMediaPlayer() {
           ref={mediaRef}
           key={objectUrl}
           controls
-          autoPlay
           src={objectUrl}
           className="w-full max-h-64 px-4 pb-2"
           style={{ display: "block" }}
+          onCanPlay={handleCanPlay}
           onError={() => {
             const el = mediaRef.current;
             const code = el?.error?.code ?? "?";

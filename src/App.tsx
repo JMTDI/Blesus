@@ -7,6 +7,7 @@ import { useUiStore } from "@/stores/ui";
 import { useComposerStore } from "@/stores/composer";
 import { useKeyboardShortcuts } from "@/lib/keyboard";
 import { ipc, type ImapUpdateEvent } from "@/lib/ipc";
+import { markReadInFlight } from "@/stores/threads";
 import {
   deleteScheduledSend,
   getAccount,
@@ -190,6 +191,15 @@ export default function App() {
             useAccountsStore.setState((state) => ({
               folders: state.folders.map((f) => {
                 if (f.id !== folder.id) return f;
+                // If a markRead is currently in-flight for this folder, the
+                // server STATUS may still report the old \Unseen count because
+                // \Seen hasn't been confirmed yet. Skip the update in that case
+                // to prevent the badge from flickering back to 1 right after
+                // the user opened the email.
+                if (markReadInFlight.has(f.id)) {
+                  console.log(`[tick-inbox] ${f.name} skipped — markRead in-flight`);
+                  return f;
+                }
                 console.log(`[tick-inbox] ${f.name} ${f.unreadCount} → ${status.unseen}`);
                 return { ...f, unreadCount: status.unseen };
               }),

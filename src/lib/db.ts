@@ -1261,7 +1261,7 @@ export async function upsertMessageSummary(input: UpsertMessageInput): Promise<v
        subject = excluded.subject,
        subject_normalized = excluded.subject_normalized,
        snippet = excluded.snippet,
-       received_at = excluded.received_at,
+       received_at = COALESCE(excluded.received_at, messages.received_at),
        flags = excluded.flags,
        is_unread = MIN(excluded.is_unread, messages.is_unread),
        is_starred = excluded.is_starred,
@@ -1283,7 +1283,9 @@ export async function upsertMessageSummary(input: UpsertMessageInput): Promise<v
       input.subject,
       subjectNorm,
       input.snippet,
-      input.receivedAt,
+      // Fall back to current time if the server didn't provide a date, so
+      // the message still sorts near the top rather than NULL-sorting to the bottom.
+      input.receivedAt ?? Math.floor(Date.now() / 1000),
       JSON.stringify(input.flags),
       input.isUnread ? 1 : 0,
       input.isStarred ? 1 : 0,
@@ -1303,7 +1305,7 @@ export async function listMessagesForFolder(
   return db.select<StoredMessage[]>(
     `SELECT * FROM messages
       WHERE folder_id = $1
-      ORDER BY received_at DESC, imap_uid DESC
+      ORDER BY received_at DESC NULLS LAST, imap_uid DESC
       LIMIT $2`,
     [folderId, limit],
   );
@@ -1314,7 +1316,7 @@ export async function listAllStarredMessages(limit = 500): Promise<StoredMessage
   return db.select<StoredMessage[]>(
     `SELECT * FROM messages
       WHERE is_starred = 1
-      ORDER BY received_at DESC, imap_uid DESC
+      ORDER BY received_at DESC NULLS LAST, imap_uid DESC
       LIMIT $1`,
     [limit],
   );

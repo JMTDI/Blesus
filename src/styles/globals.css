@@ -54,7 +54,7 @@
   --bg-raised:   var(--color-surface-0);
   --bg-sunken:   var(--color-surface-100);
   --bg-hover:    var(--color-surface-100);
-  --bg-selected: var(--color-accent-100);
+  --bg-selected: var(--color-accent-300);
   --bg-sidebar:  #f6f7fa;
 
   --fg-primary:   var(--color-surface-900);
@@ -82,7 +82,7 @@ html.dark {
   --bg-raised:   var(--color-surface-800);
   --bg-sunken:   var(--color-surface-950);
   --bg-hover:    rgba(255, 255, 255, 0.04);
-  --bg-selected: rgba(91, 141, 239, 0.16);
+  --bg-selected: rgba(91, 141, 239, 0.35);
   --bg-sidebar:  #12151c;
 
   --fg-primary:   #f0f2f5;
@@ -111,7 +111,7 @@ html.black {
   --bg-raised:   #15171c;
   --bg-sunken:   #0a0b0e;
   --bg-hover:    rgba(255, 255, 255, 0.06);
-  --bg-selected: rgba(91, 141, 239, 0.2);
+  --bg-selected: rgba(91, 141, 239, 0.38);
   --bg-sidebar:  #07080a;
 
   --fg-primary:   #f2f3f5;

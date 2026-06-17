@@ -146,5 +146,11 @@ pub fn all() -> Vec<Migration> {
             sql: include_str!("../../migrations/24_attachment_cache.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 25,
+            description: "fix messages with NULL received_at that sort invisibly to the bottom",
+            sql: include_str!("../../migrations/25_fix_null_received_at.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }

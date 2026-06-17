@@ -94,8 +94,9 @@ async function diskGet(
       await db.execute(`DELETE FROM attachment_cache WHERE account_id=$1 AND folder_path=$2 AND imap_uid=$3 AND att_index=$4`, [accountId, folderPath, uid, index]).catch(() => {});
       return null;
     }
-    // Update last_used
-    await db.execute(`UPDATE attachment_cache SET last_used=unixepoch() WHERE account_id=$1 AND folder_path=$2 AND imap_uid=$3 AND att_index=$4`, [accountId, folderPath, uid, index]).catch(() => {});
+    // Update last_used fire-and-forget so it doesn't block the caller
+    // or contend with concurrent search-index writes during bulk indexing.
+    void db.execute(`UPDATE attachment_cache SET last_used=unixepoch() WHERE account_id=$1 AND folder_path=$2 AND imap_uid=$3 AND att_index=$4`, [accountId, folderPath, uid, index]).catch(() => {});
     return b64;
   } catch {
     return null;
@@ -126,11 +127,27 @@ async function diskPut(
       [accountId, folderPath, uid, index, fileName, byteSize],
     ).catch(() => {});
 
-    // Evict LRU entries if total exceeds 4 GB
-    void evictIfNeeded();
+    // Schedule LRU eviction on a delay so it doesn't contend with
+    // search-index writes happening concurrently in indexAllMail / indexNewArrivals.
+    scheduleEviction();
   } catch {
     // Non-fatal — disk cache failure just means we skip persisting
   }
+}
+
+let _evictionTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Debounce eviction so multiple rapid diskPut calls coalesce into a single
+ * eviction pass, and the pass runs after the current indexing tick has finished
+ * writing to the search_index table (avoiding SQLite write contention).
+ */
+function scheduleEviction() {
+  if (_evictionTimer !== null) return; // already scheduled
+  _evictionTimer = setTimeout(() => {
+    _evictionTimer = null;
+    void evictIfNeeded();
+  }, 5_000); // 5-second delay
 }
 
 /** Evict LRU disk cache entries until total size is under DISK_CACHE_MAX_BYTES. */

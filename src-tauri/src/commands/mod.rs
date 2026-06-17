@@ -458,22 +458,27 @@ pub fn get_attachment_cache_dir(state: tauri::State<'_, crate::LogsDir>) -> Stri
 }
 
 /// Reads a cached attachment file and returns it as base64.
+/// Uses spawn_blocking so the synchronous file I/O does not block the async runtime.
 #[tauri::command]
-pub fn attachment_cache_read(
+pub async fn attachment_cache_read(
     state: tauri::State<'_, crate::LogsDir>,
     file_name: String,
 ) -> Result<String> {
     use base64::Engine;
     let logs_dir = &state.0;
     let cache_dir = logs_dir.parent().unwrap_or(logs_dir).join("attachment-cache");
-    let bytes = std::fs::read(cache_dir.join(&file_name))
+    let path = cache_dir.join(&file_name);
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&path))
+        .await
+        .map_err(|e| crate::Error::Imap(format!("spawn_blocking: {e}")))?
         .map_err(|e| crate::Error::Imap(format!("cache read {file_name}: {e}")))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 /// Writes base64 attachment data to a cache file on disk.
+/// Uses spawn_blocking so the synchronous file I/O does not block the async runtime.
 #[tauri::command]
-pub fn attachment_cache_write(
+pub async fn attachment_cache_write(
     state: tauri::State<'_, crate::LogsDir>,
     file_name: String,
     b64: String,
@@ -485,23 +490,31 @@ pub fn attachment_cache_write(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&b64)
         .map_err(|e| crate::Error::Imap(format!("base64 decode: {e}")))?;
-    std::fs::write(cache_dir.join(&file_name), &bytes)
+    let path = cache_dir.join(&file_name);
+    tokio::task::spawn_blocking(move || std::fs::write(&path, &bytes))
+        .await
+        .map_err(|e| crate::Error::Imap(format!("spawn_blocking: {e}")))?
         .map_err(|e| crate::Error::Imap(format!("cache write {file_name}: {e}")))?;
     Ok(())
 }
 
 /// Deletes a cached attachment file from disk.
+/// Uses spawn_blocking so the synchronous file I/O does not block the async runtime.
 #[tauri::command]
-pub fn attachment_cache_delete(
+pub async fn attachment_cache_delete(
     state: tauri::State<'_, crate::LogsDir>,
     file_name: String,
 ) -> Result<()> {
     let logs_dir = &state.0;
     let cache_dir = logs_dir.parent().unwrap_or(logs_dir).join("attachment-cache");
     let path = cache_dir.join(&file_name);
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|e| crate::Error::Imap(format!("cache delete {file_name}: {e}")))?;
-    }
-    Ok(())
+    tokio::task::spawn_blocking(move || {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| crate::Error::Imap(format!("cache delete {file_name}: {e}")))?;
+        }
+        Ok::<(), crate::Error>(())
+    })
+    .await
+    .map_err(|e| crate::Error::Imap(format!("spawn_blocking: {e}")))?
 }
