@@ -1,6 +1,6 @@
 [package]
 name = "blesus"
-version = "0.2.0"
+version = "0.2.1"
 description = "Blesus — lightweight cross-platform email client"
 authors = ["Blesus contributors"]
 license = "Apache-2.0"
