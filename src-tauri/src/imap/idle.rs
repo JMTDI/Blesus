@@ -122,12 +122,6 @@ impl IdleManager {
         }
     }
 
-    pub async fn stop_all(&self) {
-        let mut map = self.handles.lock().await;
-        for (_, notify) in map.drain() {
-            notify.notify_waiters();
-        }
-    }
 }
 
 enum IdleOutcome {

@@ -11,6 +11,17 @@ const pkg = JSON.parse(
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          tiptap: ["@tiptap/react", "@tiptap/starter-kit"],
+          pdf: ["pdfjs-dist"],
+          vendor: ["emoji-picker-react", "jspdf", "mammoth", "xlsx", "react-virtuoso", "zustand"],
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

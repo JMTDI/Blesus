@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { MessageList } from "@/components/layout/MessageList";
@@ -13,7 +13,14 @@ import { Toaster } from "@/components/ui/Toaster";
 import { useUiStore } from "@/stores/ui";
 import { useAccountsStore } from "@/stores/accounts";
 import { useMediaPlayerStore } from "@/stores/mediaPlayer";
-import { AttachmentPreviewModal, ImageGalleryModal } from "@/components/mail/AttachmentPreview";
+const AttachmentPreviewModal = lazy(async () => {
+  const mod = await import("@/components/mail/AttachmentPreview");
+  return { default: mod.AttachmentPreviewModal };
+});
+const ImageGalleryModal = lazy(async () => {
+  const mod = await import("@/components/mail/AttachmentPreview");
+  return { default: mod.ImageGalleryModal };
+});
 import { useImageGalleryStore } from "@/stores/imageGallery";
 import {
   X,
@@ -217,8 +224,10 @@ export function Shell() {
                 <div className="fixed inset-x-0 bottom-0 z-[40]" style={{ top: 40 }}>
                   <MessageView fullHeight />
                 </div>
-                <AttachmentPreviewModal />
-                <ImageGalleryModal key={gallerySessionId} />
+                <Suspense fallback={null}>
+                  <AttachmentPreviewModal />
+                  <ImageGalleryModal key={gallerySessionId} />
+                </Suspense>
               </>,
               document.body,
             )}
@@ -229,8 +238,10 @@ export function Shell() {
       <MoveToFolderPicker />
       <SearchOverlay />
       <PersistentMediaPlayer />
-      <AttachmentPreviewModal />
-      <ImageGalleryModal key={gallerySessionId} />
+      <Suspense fallback={null}>
+        <AttachmentPreviewModal />
+        <ImageGalleryModal key={gallerySessionId} />
+      </Suspense>
       <Toaster />
     </div>
   );

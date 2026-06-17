@@ -46,6 +46,16 @@ export function isInQuietHours(
   return s < e ? cur >= s && cur < e : cur >= s || cur < e;
 }
 
+export async function sendTestNotification(): Promise<void> {
+  if (!(await ensurePermission())) {
+    throw new Error("Notifications permission denied");
+  }
+  sendNotification({
+    title: "Blesus",
+    body: "Test notification — toasts are working.",
+  });
+}
+
 export async function notifyNewMail(
   subject: string,
   from: string,

@@ -525,6 +525,7 @@ export function Composer() {
   const subjectFromDiv = useRef(false);
   const [draftId, setDraftId] = useState<number | null>(null);
   const [draftReady, setDraftReady] = useState(false);
+  const effectiveFromAccountId = fromAccountId ?? activeAccount?.id ?? accounts[0]?.id ?? null;
   const [editorVersion, setEditorVersion] = useState(0);
   const [toolbarActive, setToolbarActive] = useState({ bold: false, italic: false, underline: false, strike: false, bulletList: false, orderedList: false });
   const [templates, setTemplates] = useState<ResendTemplateSummary[]>([]);
@@ -625,7 +626,7 @@ export function Composer() {
     // change between opens (in which case the useEffect above never fires).
     const resolveFrom = (id: number | null) => {
       setFromAccountId(id);
-      const accs = useAccountsStore.getState().accounts;
+      const accs = useAccountsStore.getState().accounts.filter((a) => !a.isImapOnly);
       if (id != null && editor) swapSignatureInEditor(editor, accs, id);
     };
 
@@ -637,24 +638,24 @@ export function Composer() {
       void getSettings(["default_compose_account_id"]).then((s) => {
         const saved = s["default_compose_account_id"];
         const savedId = saved ? Number(saved) : null;
-        const allAccounts = useAccountsStore.getState().accounts;
+        const allAccounts = useAccountsStore.getState().accounts.filter((a) => !a.isImapOnly);
         const valid = savedId != null && allAccounts.some((a) => a.id === savedId);
-        resolveFrom(valid ? savedId : (activeAccountId ?? null));
+        resolveFrom(valid ? savedId : (allAccounts[0]?.id ?? activeAccountId ?? null));
       });
     } else if (preferredFromAccountId != null) {
       // Reply/forward — honour the account detected from the thread history.
-      const allAccounts = useAccountsStore.getState().accounts;
+      const allAccounts = useAccountsStore.getState().accounts.filter((a) => !a.isImapOnly);
       const valid = allAccounts.some((a) => a.id === preferredFromAccountId);
-      resolveFrom(valid ? preferredFromAccountId : (activeAccountId ?? null));
+      resolveFrom(valid ? preferredFromAccountId : (allAccounts[0]?.id ?? activeAccountId ?? null));
     } else {
       // Reply/forward with no prior outgoing message — fall back to the saved
       // default compose account before using the active inbox account.
       void getSettings(["default_compose_account_id"]).then((s) => {
         const saved = s["default_compose_account_id"];
         const savedId = saved ? Number(saved) : null;
-        const allAccounts = useAccountsStore.getState().accounts;
+        const allAccounts = useAccountsStore.getState().accounts.filter((a) => !a.isImapOnly);
         const valid = savedId != null && allAccounts.some((a) => a.id === savedId);
-        resolveFrom(valid ? savedId : (activeAccountId ?? null));
+        resolveFrom(valid ? savedId : (allAccounts[0]?.id ?? activeAccountId ?? null));
       });
     }
     setAttachments(
@@ -832,8 +833,8 @@ export function Composer() {
   }, [open, editor]);
 
   const canSend = useMemo(
-    () => to.trim().length > 0 && subject.trim().length > 0 && !sending,
-    [to, subject, sending],
+    () => parseRecipients(to).length > 0 && !sending,
+    [to, sending],
   );
 
   async function handlePickAttachment() {
@@ -927,8 +928,18 @@ export function Composer() {
   }
 
   async function handleSend() {
-    if (!activeAccount || !editor) return;
+    if (!editor) return;
     setError(null);
+
+    const selectedAccountId = effectiveFromAccountId;
+    const selectedAccount = selectedAccountId != null
+      ? useAccountsStore.getState().accounts.find((a) => a.id === selectedAccountId && !a.isImapOnly) ?? null
+      : null;
+    if (!selectedAccount) {
+      setError("Select a valid From account before sending.");
+      return;
+    }
+    flog.info(`compose: handleSend selectedAccount=${selectedAccount.id} activeAccount=${activeAccountId ?? "none"} to=${JSON.stringify(to)} subject=${JSON.stringify(subject)}`);
 
     const toList = parseRecipients(to);
     const ccList = parseRecipients(cc);
@@ -980,7 +991,7 @@ export function Composer() {
       bodyHtml: html,
       rawBodyHtml,
       attachments: outgoingAttachments,
-      accountId: fromAccountId ?? activeAccount.id,
+      accountId: selectedAccount.id,
       mode,
       inReplyToThread,
     };
@@ -1032,7 +1043,17 @@ export function Composer() {
   }
 
   async function handleSendLater(): Promise<void> {
-    if (!activeAccount || !editor) return;
+    if (!editor) return;
+
+    const selectedAccountId = effectiveFromAccountId;
+    const selectedAccount = selectedAccountId != null
+      ? useAccountsStore.getState().accounts.find((a) => a.id === selectedAccountId && !a.isImapOnly) ?? null
+      : null;
+    if (!selectedAccount) {
+      setError("Select a valid From account before scheduling.");
+      return;
+    }
+    flog.info(`compose: handleSendLater selectedAccount=${selectedAccount.id} activeAccount=${activeAccountId ?? "none"}`);
     const html = editor.getHTML();
     const text = editor.getText();
     const sample = new Date(Date.now() + 60 * 60 * 1000)
@@ -1086,7 +1107,7 @@ export function Composer() {
 
     try {
       await insertScheduledSend({
-        accountId: fromAccountId ?? activeAccount.id,
+        accountId: selectedAccount.id,
         payloadJson: JSON.stringify(payload),
         mode,
         replyUid: inReplyToThread?.id ?? null,
@@ -1206,7 +1227,7 @@ export function Composer() {
               <AddrRow label="From">
                 {accounts.length > 1 ? (
                   <select
-                    value={fromAccountId ?? activeAccountId ?? ""}
+                    value={effectiveFromAccountId ?? ""}
                     onChange={(e) => setFromAccountId(Number(e.target.value))}
                     className="bg-transparent border-0 outline-none text-[13px] text-secondary cursor-pointer hover:text-primary max-w-full"
                   >

@@ -45,6 +45,7 @@ import {
   type StoredRule,
 } from "@/lib/db";
 import { getSettings, setSetting } from "@/lib/settings";
+import { sendTestNotification } from "@/lib/notifications";
 import type { RuleAction, RuleCondition, RuleField, RuleOp } from "@/lib/rules";
 import { AccountForm } from "@/components/settings/AccountForm";
 import { AddressBook } from "@/components/settings/AddressBook";
@@ -579,22 +580,7 @@ function GeneralSection() {
             type="button"
             onClick={async () => {
               try {
-                const {
-                  isPermissionGranted,
-                  requestPermission,
-                  sendNotification,
-                } = await import("@tauri-apps/plugin-notification");
-                if (!(await isPermissionGranted())) {
-                  const res = await requestPermission();
-                  if (res !== "granted") {
-                    toast.error("Notifications permission denied");
-                    return;
-                  }
-                }
-                sendNotification({
-                  title: "Cursus",
-                  body: "Test notification — toasts are working.",
-                });
+                await sendTestNotification();
               } catch (err) {
                 toast.error(`Test failed: ${err}`);
               }
