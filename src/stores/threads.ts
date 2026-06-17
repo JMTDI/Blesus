@@ -244,9 +244,6 @@ const highestKnownUid = new Map<string, number>();
 // when Promise.all fires concurrent calls for same-subject threads.
 const permanentDeleteInFlight = new Set<number>();
 
-const IMPORTANT_KEYWORD = "Cursus-Important";
-const LEGACY_IMPORTANT_KEYWORD = "Flow-Important";
-
 // ── Conversation threading (Union-Find over Message-ID / In-Reply-To /
 // References) ────────────────────────────────────────────────────────────
 
@@ -384,17 +381,15 @@ function groupByMessageIdFamily<T extends ThreadMember & {
       if (split.length === 0) continue;
       if (stay.length === 0) {
         // All members are isolated — break each into its own singleton.
-        for (const m of members) {
-          if (groups.get(root)?.length === 1) break; // already singleton
+        if (groups.get(root)?.length !== 1) {
           groups.delete(root);
           for (const mm of members) groups.set(`isolated:uid:${mm.uid}`, [mm]);
-          break;
         }
         continue;
       }
       groups.set(root, stay);
-      for (const m of split) {
-        groups.set(`isolated:uid:${m.uid}`, [m]);
+      for (const splitItem of split) {
+        groups.set(`isolated:uid:${splitItem.uid}`, [splitItem]);
       }
     }
   }
@@ -718,10 +713,10 @@ async function runRuleAction(
       void updateMessageFlags(folderId, uid, { isStarred: true }).catch(() => {});
       return false;
     }
-    case "important": {
-      // Feature removed — no-op
-      return false;
-    }
+    default: break;
+  }
+  // handle "trash" and "move_to" below
+  switch (action.type) {
     case "trash": {
       const trashPath = findFolderPath(accountId, "trash") ?? "Trash";
       if (folderPath === trashPath) return false; // already in trash
@@ -729,7 +724,9 @@ async function runRuleAction(
       void deleteMessage(folderId, uid).catch(() => {});
       return true;
     }
+    default: break;
   }
+  return false;
 }
 
 export const useThreadsStore = create<ThreadsState>((set, get) => ({
@@ -859,6 +856,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
               flags: s.flags,
               isUnread: !s.flags.includes("Seen"),
               isStarred: s.flags.includes("Flagged"),
+              isImportant: false,
               hasAttachments: s.hasAttachments,
               isBulk: s.isBulk,
               isAuto: s.isAuto,
@@ -1025,7 +1023,9 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
       }
       const allThreads: Thread[] = [];
       for (const [key, msgs] of grouped) {
-        const [accountIdStr, folderIdStr] = key.split(":");
+        const splitKey = key.split(":");
+        const accountIdStr = splitKey[0] ?? "0";
+        const folderIdStr = splitKey[1] ?? "0";
         const accountId = parseInt(accountIdStr, 10);
         const folderId = parseInt(folderIdStr, 10);
         const ts = groupMessagesIntoThreads(
@@ -1077,6 +1077,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
             flags: s.flags,
             isUnread: !s.flags.includes("Seen"),
             isStarred: s.flags.includes("Flagged"),
+            isImportant: false,
             hasAttachments: s.hasAttachments,
             isBulk: s.isBulk,
             isAuto: s.isAuto,
@@ -1168,6 +1169,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
               flags: s.flags,
               isUnread: !s.flags.includes("Seen"),
               isStarred: s.flags.includes("Flagged"),
+              isImportant: false,
               hasAttachments: s.hasAttachments,
               isBulk: s.isBulk,
               isAuto: s.isAuto,
@@ -1473,7 +1475,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
       threads: state.threads.map((t) => {
         if (!t.messages?.some((m) => m.uid === uid)) return t;
         const msgs = t.messages.filter((m) => m.uid !== uid);
-        const newId = t.id === uid && msgs.length > 0 ? msgs[0].uid : t.id;
+        const newId = t.id === uid && msgs.length > 0 ? (msgs[0]?.uid ?? t.id) : t.id;
         if (t.id === uid && msgs.length > 0) newThreadId = newId;
         return { ...t, id: newId, messages: msgs, messageCount: Math.max(1, t.messageCount - 1) };
       }),
@@ -2623,6 +2625,7 @@ export async function syncFolderToDb(
           flags: s.flags,
           isUnread: !s.flags.includes("Seen"),
           isStarred: s.flags.includes("Flagged"),
+          isImportant: false,
           hasAttachments: s.hasAttachments,
           isBulk: s.isBulk,
           isAuto: s.isAuto,
@@ -2668,7 +2671,7 @@ const AUTO_LOCAL_PART =
 
 function extractEmailAddress(raw: string): string {
   const m = raw.match(/<([^>]+)>/);
-  return (m && m[1] ? m[1] : raw).trim();
+  return (m?.[1] ?? raw).trim();
 }
 
 function inferCategoryFromFlags(

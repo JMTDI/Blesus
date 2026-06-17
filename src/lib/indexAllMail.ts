@@ -47,7 +47,7 @@ const AUTO_LOCAL =
 
 function isAuto(from: string) {
   const m = from.match(/<([^>]+)>/);
-  const addr = m ? m[1] : from;
+  const addr = m?.[1] ?? from;
   const local = addr.split("@")[0] ?? "";
   return AUTO_LOCAL.test(local);
 }
@@ -126,6 +126,7 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
       if (cancelled()) { finish("cancelled"); return; }
 
       const folder = realFolders[fi];
+      if (!folder) continue;
       const account = await getAccount(folder.accountId);
       if (!account) continue;
       const secrets = await getAccountSecrets(folder.accountId);
@@ -176,7 +177,7 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
                 (s.references ?? []).length > 0
                   ? (s.references ?? []).join(" ")
                   : null,
-              fromAddress: s.from,
+              fromAddress: s.from ?? "",
               toAddresses: s.to.join(", "),
               subject: s.subject,
               snippet: s.snippet,
@@ -184,9 +185,10 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
               flags: s.flags,
               isUnread: !s.flags.includes("Seen"),
               isStarred: s.flags.includes("Flagged"),
+              isImportant: false,
               hasAttachments: s.hasAttachments,
               isBulk: isBulk(s.flags),
-              isAuto: isAuto(s.from),
+              isAuto: isAuto(s.from ?? ""),
             }).catch(() => {}),
           ),
         );
@@ -199,7 +201,7 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
               folderPath: folder.path,
               imapUid: s.uid,
               subject: s.subject,
-              fromAddress: s.from,
+              fromAddress: s.from ?? "",
               toAddresses: s.to.join(", "),
               snippet: s.snippet,
               receivedAt: s.date,
@@ -492,6 +494,7 @@ export async function extractAllAttachments(
   for (let i = 0; i < work.length; i++) {
     if (signal?.aborted) return;
     const item = work[i];
+    if (!item) continue;
 
     const existing = await getSearchIndexBody(
       item.accountId, item.folderPath, item.uid,

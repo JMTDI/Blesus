@@ -45,7 +45,7 @@ export function ImportAccountsModal({ existing, onClose, onImported }: Props) {
       const sel = await open({
         multiple: false,
         directory: false,
-        filters: [{ name: "Cursus backup", extensions: ["cursus"] }],
+        filters: [{ name: "Blesus backup", extensions: ["blesus"] }],
       });
       if (typeof sel === "string") setFilePath(sel);
     } catch (err) {
@@ -150,7 +150,7 @@ export function ImportAccountsModal({ existing, onClose, onImported }: Props) {
         </h2>
         <p className="text-[12.5px] text-muted mb-5">
           {stage === "pick"
-            ? "Open an encrypted .cursus backup and enter its password to preview the accounts."
+            ? "Open an encrypted .blesus backup and enter its password to preview the accounts."
             : "Choose what to do with each account, then import."}
         </p>
 

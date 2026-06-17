@@ -49,8 +49,8 @@ export function ExportAccountsModal({ accounts, onClose }: Props) {
       const bundle = await buildAccountsBundle(Array.from(selected));
       const sealed = await ipc.backupSeal(password, JSON.stringify(bundle));
       const path = await save({
-        defaultPath: "cursus-accounts.cursus",
-        filters: [{ name: "Cursus backup", extensions: ["cursus"] }],
+        defaultPath: "blesus-accounts.blesus",
+        filters: [{ name: "Blesus backup", extensions: ["blesus"] }],
       });
       if (!path) {
         setBusy(false);

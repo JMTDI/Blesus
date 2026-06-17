@@ -15,7 +15,6 @@ import {
   Download,
   Play,
   Pause,
-  X,
   Eye,
   Images,
   Ban,
@@ -73,7 +72,8 @@ async function embedRemoteImages(html: string): Promise<string> {
 
   await Promise.all(
     imgs.map(async (img) => {
-      const src = img.getAttribute("src")!;
+      const src = img.getAttribute("src");
+      if (!src) return;
       try {
         const resp = await Promise.race([
           tauriFetch(src),
@@ -82,13 +82,13 @@ async function embedRemoteImages(html: string): Promise<string> {
           ),
         ]);
         if (!resp.ok) return;
-        const ct = (resp.headers.get("content-type") ?? "image/jpeg").split(";")[0].trim();
+        const ct = ((resp.headers.get("content-type") ?? "image/jpeg").split(";")[0] ?? "image/jpeg").trim();
         if (!ct.startsWith("image/")) return;
         const buffer = await resp.arrayBuffer();
         if (buffer.byteLength > 2 * 1024 * 1024) return; // skip > 2 MB
         const bytes = new Uint8Array(buffer);
         let binary = "";
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i] ?? 0);
         img.setAttribute("src", `data:${ct};base64,${btoa(binary)}`);
       } catch {
         // Keep original src on any error — better than removing the image
@@ -165,7 +165,7 @@ function convFromRow(r: ConversationMessage): ConvMsg {
   };
 }
 
-export function MessageView() {
+export function MessageView({ fullHeight = false }: { fullHeight?: boolean } = {}) {
   const selectedThreadId = useUiStore((s) => s.selectedThreadId);
   const threads = useThreadsStore((s) => s.threads);
   const starredThreads = useThreadsStore((s) => s.starredThreads);
@@ -175,8 +175,6 @@ export function MessageView() {
   const folders = useAccountsStore((s) => s.folders);
   const toggleStar = useThreadsStore((s) => s.toggleStar);
   const archiveThread = useThreadsStore((s) => s.archiveThread);
-  const trashThread = useThreadsStore((s) => s.trashThread);
-  const permanentDeleteThread = useThreadsStore((s) => s.permanentDeleteThread);
   const trashMessage = useThreadsStore((s) => s.trashMessage);
   const trashMessages = useThreadsStore((s) => s.trashMessages);
   const markAsSpam = useThreadsStore((s) => s.markAsSpam);
@@ -234,7 +232,10 @@ export function MessageView() {
       // not every message sharing the same uid in a different folder.
       const next = prev.filter((m) => !(m.uid === msg.uid && m.folderPath === msg.folderPath));
       if (next.length === 0) selectThread(null);
-      else if (expandedKey === msgKey(msg)) setExpandedKey(msgKey(next[next.length - 1]));
+      else if (expandedKey === msgKey(msg)) {
+        const last = next[next.length - 1];
+        if (last) setExpandedKey(msgKey(last));
+      }
       return next;
     });
     void trashMessage(threadAccountId!, msg.folderPath, msg.uid).catch(() => {});
@@ -355,7 +356,11 @@ export function MessageView() {
         }
       }
       setConvMessages(msgs);
-      setExpandedKey((prev) => prev ?? (msgs.length > 0 ? msgKey(msgs[msgs.length - 1]) : null));
+      setExpandedKey((prev) => {
+        if (prev) return prev;
+        const last = msgs[msgs.length - 1];
+        return last ? msgKey(last) : null;
+      });
       // Write the cross-folder count into the separate convCounts map so the
       // list badge stays correct even when fetchFolder rebuilds threads.
       if (msgs.length > 0 && thread) {
@@ -437,7 +442,7 @@ export function MessageView() {
 
   return (
     <section
-      className="relative flex flex-col bg-raised border-r border-soft overflow-hidden"
+      className={cn("relative flex flex-col bg-raised border-r border-soft overflow-hidden", fullHeight && "h-full border-r-0")}
       aria-label="Thread messages"
     >
       {/* Thread header — always visible, never grows */}
@@ -569,12 +574,10 @@ export function MessageView() {
  * Helps distinguish e.g. "this bubble is in Sent" vs. "in Trash" vs.
  * "in INBOX" when the reading pane shows cross-folder results.
  */
-function FolderBadge({ accountId, folderPath }: { accountId: number | null; folderPath: string }) {
+function FolderBadge({ folderPath }: { accountId?: number | null; folderPath: string }) {
   const folders = useAccountsStore((s) => s.folders);
   if (!folderPath) return null;
-  const folder =
-    folders.find((f) => f.accountId === accountId && f.path === folderPath) ??
-    folders.find((f) => f.path === folderPath);
+  const folder = folders.find((f) => f.path === folderPath);
   // Prefer the user-visible folder name; fall back to the trailing path leaf.
   const leaf = folderPath.split(/[\/. \\]/).filter(Boolean).pop() ?? folderPath;
   const label = folder?.name || leaf;
@@ -955,7 +958,7 @@ function InlineExpandedMessage({
   );
 }
 
-function MessageCard({
+export function MessageCard({
   message,
   thread,
   isSelected,
@@ -967,7 +970,6 @@ function MessageCard({
   onToggle: () => void;
 }) {
   const toggleStar = useThreadsStore((s) => s.toggleStar);
-
   const senderName = addressName(message.from) || message.from;
   const unread = !message.flags.includes("Seen");
   const { primary: dateMain, secondary: dateSub } = formatDateStack(message.date * 1000);
@@ -1021,20 +1023,6 @@ function MessageCard({
   );
 }
 
-function MessageBodyPanel({
-  message,
-  thread,
-  activeAccountId,
-  activeAccount,
-}: {
-  message: ConvMsg;
-  thread: Thread;
-  activeAccountId: number | null;
-  activeAccount: { email: string; signatureHtml: string | null } | null;
-}) {
-  // kept for any lingering references — delegates to the two split components
-  return null;
-}
 
 /** Scrollable body — occupies the `1fr` grid row. Must NOT set its own height. */
 /** Strips quoted reply content from a plain-text email body. */
@@ -1042,7 +1030,7 @@ function stripQuotedText(text: string): { main: string; hasQuotes: boolean } {
   const lines = text.split(/\r\n|\r|\n/);
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimEnd();
+    const line = (lines[i] ?? "").trimEnd();
     const nextLine = (lines[i + 1] ?? "").trimEnd();
 
     // "On Mon, Apr 1 2024, John wrote:" — may span two lines in Gmail plain text.
@@ -1073,7 +1061,8 @@ function stripQuotedText(text: string): { main: string; hasQuotes: boolean } {
     if (line.startsWith(">") && i > 0) {
       let quoteCount = 0;
       for (let j = i; j < Math.min(i + 6, lines.length); j++) {
-        if (lines[j].startsWith(">") || lines[j].trim() === "") quoteCount++;
+        const qLine = lines[j] ?? "";
+        if (qLine.startsWith(">") || qLine.trim() === "") quoteCount++;
         else break;
       }
       if (quoteCount >= 2) {
@@ -1090,7 +1079,7 @@ function MessageBodyContent({
   message,
   thread,
   activeAccountId,
-  activeAccount,
+  activeAccount: _activeAccountMBC,
 }: {
   message: ConvMsg;
   thread: Thread;
@@ -1241,7 +1230,7 @@ function MessageReplyBar({
   message,
   thread,
   activeAccountId,
-  activeAccount,
+  activeAccount: _activeAccount,
   allMessages,
 }: {
   message: ConvMsg;
@@ -1260,7 +1249,7 @@ function MessageReplyBar({
 
   const body = bodies[`${message.folderPath}:${message.uid}`];
   const isLoading = loading[`${message.folderPath}:${message.uid}`];
-  const canReply = Boolean(activeAccount && !isLoading);
+  const canReply = Boolean(_activeAccount && !isLoading);
 
   // Build participants from THIS specific message's from/to/cc so that
   // Reply/Reply All target the right people regardless of thread order.
@@ -1292,7 +1281,8 @@ function MessageReplyBar({
     for (const m of sorted) {
       // Skip the message being replied to (it's from the external sender).
       if (m.uid === message.uid) continue;
-      const fromEmail = m.from.match(/<([^>]+)>/) ? m.from.match(/<([^>]+)>/)![1].toLowerCase() : m.from.toLowerCase();
+      const fromMatch = m.from.match(/<([^>]+)>/);
+      const fromEmail = (fromMatch?.[1] ?? m.from).toLowerCase();
       const id = accountEmails.get(fromEmail);
       if (id != null) return id;
     }
@@ -1350,12 +1340,10 @@ function MessageReplyBar({
         // Walk document in order; pick the FIRST element that matches.
         // querySelectorAll returns elements in tree order.
         let marker: Element | null = null;
-        let markerKind: string | null = null;
         for (const el of Array.from(doc.body.querySelectorAll("*"))) {
           const kind = isQuoteMarker(el);
           if (kind) {
             marker = el;
-            markerKind = kind;
             break;
           }
         }
@@ -1383,11 +1371,10 @@ function MessageReplyBar({
           // This robustly handles flat HTML with <br>-only quoting.
           const html = doc.body.innerHTML;
           // Split on <br> or <br/> or <br /> (case-insensitive)
-          const brRegex = /<br\s*\/?>/i;
           const lines = html.split(/<br\s*\/?>/i);
           let cutIdx = -1;
           for (let i = 0; i < lines.length; ++i) {
-            const txt = lines[i].replace(/<[^>]+>/g, "").trim();
+            const txt = (lines[i] ?? "").replace(/<[^>]+>/g, "").trim();
             if (
               /^on\s+(?:mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d)[\s\S]{2,300}\s+wrote:\s*$/i.test(txt) ||
               /^>{1,3}\s*/.test(txt) ||
@@ -1503,11 +1490,12 @@ function MessageReplyBar({
           const stamp = Date.now();
           outAttachments = await Promise.all(
             body.attachments.map(async (att) => {
-              const safeName = att.filename.replace(/[/\\:*?"<>|]/g, "_");
+              const filename = att.filename ?? `attachment-${att.index + 1}`;
+              const safeName = filename.replace(/[/\\:*?"<>|]/g, "_");
               const destPath = `${tmp}${sep}cursus-${stamp}-${att.index}-${safeName}`;
               await ipc.imapSaveAttachment(cfg, message.folderPath, message.uid, att.index, destPath);
               return {
-                filename: att.filename,
+                filename,
                 path: destPath,
                 contentType: att.contentType,
               } satisfies OutgoingAttachment;
@@ -1542,10 +1530,10 @@ function MessageReplyBar({
 
   return (
     <div className="flex items-center gap-2 px-7 py-3 border-t border-soft">
-      <ReplyButton onClick={() => openReply(syntheticThread, body?.html ?? null, body?.text ?? null, null, preferredFromAccountId, activeAccount?.email ?? null)} disabled={!canReply}>
+      <ReplyButton onClick={() => openReply(syntheticThread, body?.html ?? null, body?.text ?? null, null, preferredFromAccountId, _activeAccount?.email ?? null)} disabled={!canReply}>
         <Reply size={14} /> Reply
       </ReplyButton>
-      <ReplyButton onClick={() => activeAccount && openReplyAll(syntheticThread, body?.html ?? null, body?.text ?? null, activeAccount.email, null, preferredFromAccountId)} disabled={!canReply}>
+      <ReplyButton onClick={() => _activeAccount && openReplyAll(syntheticThread, body?.html ?? null, body?.text ?? null, _activeAccount.email, null, preferredFromAccountId)} disabled={!canReply}>
         <ReplyAll size={14} /> Reply all
       </ReplyButton>
       <ReplyButton onClick={() => openForward(syntheticThread, body?.html ?? null, body?.text ?? null, null, preferredFromAccountId)} disabled={!canReply}>
@@ -1561,7 +1549,7 @@ function MessageReplyBar({
 function IconToggle({
   children,
   label,
-  active,
+  active: _active,
   accent,
   onClick,
 }: {
@@ -1639,14 +1627,14 @@ function ActionButton({
   );
 }
 
-function Divider() {
-  return <div className="h-5 w-px mx-1 bg-[color:var(--border-strong)]" />;
-}
+const Divider = () => <div className="h-5 w-px mx-1 bg-[color:var(--border-strong)]" />;
+void Divider;
 
-function extractEmailLabel(raw: string): string {
+const extractEmailLabel = (raw: string): string => {
   const m = raw.match(/<([^>]+)>/);
   return m && m[1] ? `<${m[1]}>` : "";
-}
+};
+void extractEmailLabel;
 
 function isMediaAttachment(a: Attachment): boolean {
   const ct = a.contentType.toLowerCase();
@@ -1725,13 +1713,14 @@ function isRtfAttachment(a: Attachment): boolean {
   return (a.filename ?? "").split(".").pop()?.toLowerCase() === "rtf";
 }
 
-function isPreviewableAttachment(a: Attachment): boolean {
+const isPreviewableAttachment = (a: Attachment): boolean => {
   return (
     isPdfAttachment(a) || isImageAttachment(a) || isDocxAttachment(a) ||
     isTxtAttachment(a) || isHtmlAttachment(a) || isVideoAttachment(a) ||
     isSpreadsheetAttachment(a) || isRtfAttachment(a)
   );
-}
+};
+void isPreviewableAttachment;
 
 function AttachmentStrip({
   attachments,
@@ -1856,7 +1845,7 @@ function MiniThumb({
     const el = ref.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) setVisible(true); },
+      ([entry]) => { if (entry?.isIntersecting) setVisible(true); },
       { rootMargin: "100px" },
     );
     obs.observe(el);

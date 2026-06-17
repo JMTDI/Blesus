@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { MessageList } from "@/components/layout/MessageList";
 import { MessageView } from "@/components/layout/MessageView";
@@ -17,8 +18,6 @@ import { useImageGalleryStore } from "@/stores/imageGallery";
 import {
   X,
   Loader2,
-  Play,
-  Pause,
   Music2,
   Lock,
 } from "lucide-react";
@@ -149,6 +148,9 @@ export function Shell() {
   const starredView = useUiStore((s) => s.starredView);
   const { activeFolderId } = useAccountsStore();
   const gallerySessionId = useImageGalleryStore((s) => s.sessionId);
+  const selectedThreadId = useUiStore((s) => s.selectedThreadId);
+  const selectThread = useUiStore((s) => s.selectThread);
+  const paneOffOpen = readingPane === "off" && selectedThreadId != null;
 
   const isFolderLocked =
     !starredView &&
@@ -171,6 +173,16 @@ export function Shell() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [settingsOpen, closeSettings]);
+
+  // When reading pane is off, Escape closes the message overlay
+  useEffect(() => {
+    if (!paneOffOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") selectThread(null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [paneOffOpen, selectThread]);
 
   const sidebarWidth = sidebarCollapsed ? 64 : 240;
 
@@ -201,6 +213,16 @@ export function Shell() {
                 />
                 <MessageView />
               </>
+            )}
+            {paneOffOpen && !isFolderLocked && createPortal(
+              <>
+                <div className="fixed inset-x-0 bottom-0 z-[40]" style={{ top: 40 }}>
+                  <MessageView fullHeight />
+                </div>
+                <AttachmentPreviewModal />
+                <ImageGalleryModal key={gallerySessionId} />
+              </>,
+              document.body,
             )}
           </>
         )}

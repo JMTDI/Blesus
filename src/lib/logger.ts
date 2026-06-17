@@ -1,7 +1,7 @@
 // Frontend → backend log forwarder. Anything important enough to mention
 // in production should go through `flog`, not `console.*` alone — toasts
 // disappear, devtools aren't open, but the rotated log file in
-// `cursus-files/logs/` stays. Mirrors to console for dev DX.
+// `blesus-files/logs/` stays. Mirrors to console for dev DX.
 
 import { ipc } from "@/lib/ipc";
 

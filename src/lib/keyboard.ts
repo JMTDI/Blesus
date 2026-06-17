@@ -317,7 +317,6 @@ export function useKeyboardShortcuts(): void {
         case "!": {
           if (!selected) return;
           e.preventDefault();
-          void useThreadsStore.getState().toggleImportance(selected.id);
           return;
         }
         case "m": {

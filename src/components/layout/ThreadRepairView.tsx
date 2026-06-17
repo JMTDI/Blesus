@@ -149,7 +149,7 @@ export function ThreadRepairView() {
 // ---------------------------------------------------------------------------
 
 function MergedGroup({
-  groupId,
+  groupId: _groupId,
   items,
   selectedIds,
   onToggleSelect,

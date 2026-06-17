@@ -12,7 +12,6 @@
  */
 
 import * as pdfjsLib from "pdfjs-dist";
-import type { TextItem } from "pdfjs-dist";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import { createWorker } from "tesseract.js";
@@ -75,8 +74,7 @@ async function extractPdfText(b64: string, cacheKey?: OcrCacheKey, forceOcr?: bo
     const page = await pdf.getPage(pageNum);
     const textContent = await page.getTextContent();
     const pageText = textContent.items
-      .filter((item): item is TextItem => "str" in item)
-      .map((item) => item.str)
+      .flatMap((item) => ("str" in item && typeof (item as { str: unknown }).str === "string" ? [(item as { str: string }).str] : []))
       .join(" ")
       .trim();
 
@@ -98,7 +96,7 @@ async function extractPdfText(b64: string, cacheKey?: OcrCacheKey, forceOcr?: bo
     canvas.height = viewport.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) continue;
-    await page.render({ canvasContext: ctx as unknown as CanvasRenderingContext2D, viewport }).promise;
+    await page.render({ canvasContext: ctx as unknown as CanvasRenderingContext2D, viewport, canvas }).promise;
 
     // Try Windows OCR first
     let ocrText = "";
@@ -154,7 +152,9 @@ function extractXlsxText(b64: string): string {
   const wb = XLSX.read(bytes, { type: "array" });
   const parts: string[] = [];
   for (const name of wb.SheetNames) {
-    parts.push(XLSX.utils.sheet_to_csv(wb.Sheets[name]));
+    const sheet = wb.Sheets[name];
+    if (!sheet) continue;
+    parts.push(XLSX.utils.sheet_to_csv(sheet));
   }
   return parts.join("\n");
 }

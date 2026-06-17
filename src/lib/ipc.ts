@@ -278,6 +278,13 @@ export const ipc = {
     invoke<string>("backup_read_file", { path }),
 
   getLogsDir: () => invoke<string>("get_logs_dir"),
+  getAttachmentCacheDir: () => invoke<string>("get_attachment_cache_dir"),
+  attachmentCacheRead: (fileName: string) =>
+    invoke<string>("attachment_cache_read", { fileName }),
+  attachmentCacheWrite: (fileName: string, b64: string) =>
+    invoke<void>("attachment_cache_write", { fileName, b64 }),
+  attachmentCacheDelete: (fileName: string) =>
+    invoke<void>("attachment_cache_delete", { fileName }),
   logFrontend: (level: "info" | "warn" | "error" | "debug", message: string) =>
     invoke<void>("log_frontend", { level, message }),
 };

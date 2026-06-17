@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     resend_from_address TEXT,
     signature_html TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    is_imap_only INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS workspaces (

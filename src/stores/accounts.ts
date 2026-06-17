@@ -52,6 +52,7 @@ function accountFromStored(row: StoredAccount): Account {
     unreadCount: 0,
     signatureHtml: row.signature_html ?? null,
     isSendOnly: !!row.is_send_only,
+    isImapOnly: !!row.is_imap_only,
   };
 }
 
@@ -139,24 +140,6 @@ function displayNameFor(path: string, delimiter: string | null): string {
     if (leaf) return leaf;
   }
   return path;
-}
-
-async function runWithConcurrency<T>(
-  items: T[],
-  limit: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  let next = 0;
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (true) {
-      const idx = next++;
-      if (idx >= items.length) return;
-      const item = items[idx];
-      if (item === undefined) return;
-      await worker(item);
-    }
-  });
-  await Promise.all(runners);
 }
 
 function orderFolders(folders: MailFolder[]): MailFolder[] {

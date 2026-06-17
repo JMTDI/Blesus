@@ -15,7 +15,7 @@ let cached: Database | null = null;
 export async function getDb(): Promise<Database> {
   if (!cached) {
     // The DB lives in a portable folder next to the executable
-    // (`<exe_dir>/cursus-files/cursus.db`). The Rust side computes the absolute
+    // (`<exe_dir>/blesus-files/blesus.db`). The Rust side computes the absolute
     // SQLite URL at startup and registers migrations against it; we have to
     // load with the exact same string, hence the IPC round-trip.
     const url = await ipc.getDatabaseUrl();
@@ -43,6 +43,8 @@ export interface StoredAccount {
   created_at: number;
   /** True when this account has no IMAP inbox — appears only as a From option in the Composer. */
   is_send_only: number; // SQLite integer boolean
+  /** True when this account only receives mail and should not appear in the compose From dropdown. */
+  is_imap_only: number; // SQLite integer boolean
 }
 
 export interface AccountInput {
@@ -71,6 +73,8 @@ export interface AccountInput {
   };
   /** When true, account has no IMAP inbox and only appears as a From option. */
   isSendOnly?: boolean;
+  /** When true, account only receives mail and is hidden from the compose From dropdown. */
+  isImapOnly?: boolean;
   signatureHtml?: string;
 }
 
@@ -119,7 +123,8 @@ export async function listAccounts(): Promise<StoredAccount[]> {
     `SELECT id, email, display_name, color, imap_host, imap_port, imap_security,
             imap_username, smtp_mode, smtp_host, smtp_port, smtp_security,
             smtp_username, resend_from_address, signature_html, created_at,
-            COALESCE(is_send_only, 0) AS is_send_only
+            COALESCE(is_send_only, 0) AS is_send_only,
+            COALESCE(is_imap_only, 0) AS is_imap_only
        FROM accounts
        ORDER BY sort_order ASC, id ASC`,
   );
@@ -154,7 +159,8 @@ export async function getAccount(id: number): Promise<StoredAccount | null> {
     `SELECT id, email, display_name, color, imap_host, imap_port, imap_security,
             imap_username, smtp_mode, smtp_host, smtp_port, smtp_security,
             smtp_username, resend_from_address, signature_html, created_at,
-            COALESCE(is_send_only, 0) AS is_send_only
+            COALESCE(is_send_only, 0) AS is_send_only,
+            COALESCE(is_imap_only, 0) AS is_imap_only
        FROM accounts WHERE id = $1`,
     [id],
   );
@@ -180,8 +186,8 @@ export async function insertAccount(input: AccountInput): Promise<number> {
        email, display_name, color,
        imap_host, imap_port, imap_security, imap_username, imap_password_enc,
        smtp_mode, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc,
-       resend_api_key_enc, resend_from_address, signature_html, is_send_only
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+       resend_api_key_enc, resend_from_address, signature_html, is_send_only, is_imap_only
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
     [
       input.email,
       input.displayName || null,
@@ -201,6 +207,7 @@ export async function insertAccount(input: AccountInput): Promise<number> {
       input.resend?.fromAddress ?? null,
       input.signatureHtml?.trim() || null,
       input.isSendOnly ? 1 : 0,
+      input.isImapOnly ? 1 : 0,
     ],
   );
   const id = Number(result.lastInsertId);
@@ -253,9 +260,9 @@ export async function updateAccount(id: number, input: AccountInput): Promise<vo
        smtp_mode = $9, smtp_host = $10, smtp_port = $11,
        smtp_security = $12, smtp_username = $13, smtp_password_enc = $14,
        resend_api_key_enc = $15, resend_from_address = $16,
-       signature_html = $17, is_send_only = $18,
+       signature_html = $17, is_send_only = $18, is_imap_only = $19,
        updated_at = unixepoch()
-     WHERE id = $19`,
+     WHERE id = $20`,
     [
       input.email,
       input.displayName || null,
@@ -275,6 +282,7 @@ export async function updateAccount(id: number, input: AccountInput): Promise<vo
       input.resend?.fromAddress ?? null,
       input.signatureHtml?.trim() || null,
       input.isSendOnly ? 1 : 0,
+      input.isImapOnly ? 1 : 0,
       id,
     ],
   );
@@ -857,7 +865,9 @@ export async function getOcrCache(
     [accountId, folderPath, imapUid, attIndex, pageNum],
   );
   if (rows.length === 0) return null;
-  try { return JSON.parse(rows[0].words_json) as OcrWord[]; }
+  const first = rows[0];
+  if (!first) return null;
+  try { return JSON.parse(first.words_json) as OcrWord[]; }
   catch { return null; }
 }
 

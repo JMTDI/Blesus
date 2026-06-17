@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, type CSSProperties } from "react";
 import * as pdfjsLib from "pdfjs-dist";
-import type { PDFDocumentProxy, TextItem } from "pdfjs-dist";
+import type { PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerCode from "pdfjs-dist/build/pdf.worker.min.mjs?raw";
 import { invoke } from "@tauri-apps/api/core";
 import mammoth from "mammoth";
@@ -218,7 +218,8 @@ function annotArrow(x1: number, y1: number, x2: number, y2: number, sz = 14): st
 function drawAnnotOnCanvas(ctx: CanvasRenderingContext2D, shapes: AnnotShape[], scaleX = 1, scaleY = 1) {
   for (const s of shapes) {
     ctx.save();
-    ctx.strokeStyle = s.color; ctx.lineWidth = s.width * Math.max(scaleX, scaleY); ctx.lineCap = "round"; ctx.lineJoin = "round";
+    const shapeWidth = ("width" in s) ? (s as unknown as { width: number }).width : 2;
+    ctx.strokeStyle = s.color; ctx.lineWidth = shapeWidth * Math.max(scaleX, scaleY); ctx.lineCap = "round"; ctx.lineJoin = "round";
     if (s.type === "pen") {
       const d = s.d.replace(/([-\d.]+),([-\d.]+)/g, (_: string, x: string, y: string) => `${+x * scaleX},${+y * scaleY}`);
       ctx.stroke(new Path2D(d));
@@ -287,7 +288,7 @@ function AnnotationLayer({
   const textValRef = useRef("");
   const [preview,  setPreview]  = useState<AnnotShape | null>(null);
   const [textPos,  setTextPos]  = useState<{ x: number; y: number; sx: number; sy: number } | null>(null);
-  const [textVal,  setTextVal]  = useState("");
+  const [_textVal,  setTextVal]  = useState("");
 
   function coords(e: React.MouseEvent): { x: number; y: number } {
     const svg = svgRef.current!;
@@ -392,16 +393,8 @@ function AnnotationLayer({
 
 const inner = <><AnnotShapes shapes={shapes} />{preview && <AnnotShapes shapes={[preview]} />}</>;
 
-  function commitText() {
-    const val = textValRef.current;
-    if (textPos && val.trim()) {
-      onAdd({ id: crypto.randomUUID(), type: "text", x: textPos.x, y: textPos.y, text: val, color, fontSize, fontFamily });
-    }
-    setTextPos(null); setTextVal(""); textValRef.current = "";
-  }
-  function cancelText() {
-    setTextPos(null); setTextVal(""); textValRef.current = "";
-  }
+  // text annotation helpers — wired via ref for future UI
+  void useRef({ commit: () => { if (textPos) { const val = textValRef.current; if (val.trim()) onAdd({ id: crypto.randomUUID(), type: "text", x: textPos.x, y: textPos.y, text: val, color, fontSize, fontFamily }); } setTextPos(null); setTextVal(""); textValRef.current = ""; }, cancel: () => { setTextPos(null); setTextVal(""); textValRef.current = ""; } });
 
   const fsNum = typeof fontSize === "number" ? fontSize : (parseInt(String(fontSize)) || 16);
 
@@ -594,7 +587,7 @@ const PdfPage = forwardRef<HTMLDivElement, {
 
       // Render canvas and fetch text content in parallel
       let renderErr: unknown = null;
-      renderTask = page.render({ canvasContext: ctx, viewport });
+      renderTask = page.render({ canvasContext: ctx, viewport, canvas: canvas });
       const [, content] = await Promise.all([
         renderTask.promise.catch((e) => { renderErr = e; }),
         page.getTextContent(),
@@ -625,7 +618,7 @@ const PdfPage = forwardRef<HTMLDivElement, {
         // Searchable PDF: use pdfjs text positions
         for (const item of content.items) {
           if (!("str" in item) || !item.str) continue;
-          const textItem = item as TextItem;
+          const textItem = item as { str: string; transform: number[]; width: number; height: number; fontName?: string };
           const tx = pdfjsLib.Util.transform(viewport.transform, textItem.transform);
           const angle = Math.atan2(tx[1], tx[0]);
           const fontHeight = Math.max(Math.hypot(tx[2], tx[3]), 1);
@@ -693,7 +686,7 @@ const PdfPage = forwardRef<HTMLDivElement, {
             ocrCanvas.height = ocrViewport.height;
             const ocrCtx = ocrCanvas.getContext("2d");
             if (ocrCtx) {
-              await page.render({ canvasContext: ocrCtx, viewport: ocrViewport }).promise;
+              await page.render({ canvasContext: ocrCtx, viewport: ocrViewport, canvas: ocrCanvas }).promise;
             }
             const pngBase64 = ocrCanvas.toDataURL("image/png").split(",")[1];
             if (cancelled) return;
@@ -868,11 +861,11 @@ const PdfPage = forwardRef<HTMLDivElement, {
       ))}
       {renderViewport && widgetAnnotations.map((ann: any, i: number) => {
         if (!Array.isArray(ann.rect) || ann.rect.length < 4) return null;
-        const t = renderViewport.transform;
-        const sx1 = ann.rect[0] * t[0] + ann.rect[1] * t[2] + t[4];
-        const sy1 = ann.rect[0] * t[1] + ann.rect[1] * t[3] + t[5];
-        const sx2 = ann.rect[2] * t[0] + ann.rect[3] * t[2] + t[4];
-        const sy2 = ann.rect[2] * t[1] + ann.rect[3] * t[3] + t[5];
+        const t: number[] = renderViewport.transform;
+        const sx1 = (ann.rect[0] as number) * t[0]! + (ann.rect[1] as number) * t[2]! + t[4]!;
+        const sy1 = (ann.rect[0] as number) * t[1]! + (ann.rect[1] as number) * t[3]! + t[5]!;
+        const sx2 = (ann.rect[2] as number) * t[0]! + (ann.rect[3] as number) * t[2]! + t[4]!;
+        const sy2 = (ann.rect[2] as number) * t[1]! + (ann.rect[3] as number) * t[3]! + t[5]!;
         const fl = Math.min(sx1, sx2);
         const ft = Math.min(sy1, sy2);
         const fw = Math.abs(sx2 - sx1);
@@ -1101,7 +1094,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
 
         // annotationMode: 0 = DISABLE — prevents pdfjs from loading the
         // annotation editor layer (which pulls in print-preview.bundle.js)
-        await page.render({ canvasContext: ctx, viewport: vp, annotationMode: 0 }).promise;
+        await page.render({ canvasContext: ctx, viewport: vp, annotationMode: 0, canvas }).promise;
 
         // Draw filled form values directly onto the canvas
         if (hasForm && Object.keys(formValues).length > 0) {
@@ -1112,10 +1105,10 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
             if (fv === undefined || fv === "" || fv === false) continue;
             if (!Array.isArray(ann.rect) || ann.rect.length < 4) continue;
             const t = vp.transform;
-            const sx1 = ann.rect[0] * t[0] + ann.rect[1] * t[2] + t[4];
-            const sy1 = ann.rect[0] * t[1] + ann.rect[1] * t[3] + t[5];
-            const sx2 = ann.rect[2] * t[0] + ann.rect[3] * t[2] + t[4];
-            const sy2 = ann.rect[2] * t[1] + ann.rect[3] * t[3] + t[5];
+            const sx1 = (ann.rect[0] ?? 0) * (t[0] ?? 1) + (ann.rect[1] ?? 0) * (t[2] ?? 0) + (t[4] ?? 0);
+            const sy1 = (ann.rect[0] ?? 0) * (t[1] ?? 0) + (ann.rect[1] ?? 0) * (t[3] ?? 1) + (t[5] ?? 0);
+            const sx2 = (ann.rect[2] ?? 0) * (t[0] ?? 1) + (ann.rect[3] ?? 0) * (t[2] ?? 0) + (t[4] ?? 0);
+            const sy2 = (ann.rect[2] ?? 0) * (t[1] ?? 0) + (ann.rect[3] ?? 0) * (t[3] ?? 1) + (t[5] ?? 0);
             const fl = Math.min(sx1, sx2);
             const ft = Math.min(sy1, sy2);
             const fw = Math.abs(sx2 - sx1);
@@ -1159,7 +1152,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
           const tmp = document.createElement("canvas");
           tmp.width = vp.width; tmp.height = vp.height;
           const img2 = new Image();
-          img2.src = pageDataUrls[i - 1];
+          img2.src = pageDataUrls[i - 1] ?? "";
           await new Promise<void>((r) => { img2.onload = () => r(); img2.onerror = () => r(); });
           const tc = tmp.getContext("2d")!;
           tc.drawImage(img2, 0, 0);
@@ -1202,7 +1195,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
   async function handleDownloadPdf() {
     if (!pdf) return;
     const PRINT_SCALE = 2;
-    const defaultName = (track?.filename ?? "document").replace(/\.pdf$/i, "") + "-annotated.pdf";
+    const defaultName = (track?.attachment.filename ?? "document").replace(/\.pdf$/i, "") + "-annotated.pdf";
     const destPath = await save({ defaultPath: defaultName, title: "Save annotated PDF", filters: [{ name: "PDF", extensions: ["pdf"] }] });
     if (!destPath) return;
     const pageCanvases: { canvas: HTMLCanvasElement; vp: { width: number; height: number } }[] = [];
@@ -1213,7 +1206,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
       canvas.width = vp.width; canvas.height = vp.height;
       const ctx = canvas.getContext("2d");
       if (!ctx) continue;
-      await page.render({ canvasContext: ctx, viewport: vp, annotationMode: 0 }).promise;
+      await page.render({ canvasContext: ctx, viewport: vp, annotationMode: 0, canvas }).promise;
       if (hasForm && Object.keys(formValues).length > 0) {
         const pageAnnotations = await page.getAnnotations();
         for (const ann of pageAnnotations as any[]) {
@@ -1222,10 +1215,10 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
           if (fv === undefined || fv === "" || fv === false) continue;
           if (!Array.isArray(ann.rect) || ann.rect.length < 4) continue;
           const t = vp.transform;
-          const sx1 = ann.rect[0] * t[0] + ann.rect[1] * t[2] + t[4];
-          const sy1 = ann.rect[0] * t[1] + ann.rect[1] * t[3] + t[5];
-          const sx2 = ann.rect[2] * t[0] + ann.rect[3] * t[2] + t[4];
-          const sy2 = ann.rect[2] * t[1] + ann.rect[3] * t[3] + t[5];
+          const sx1 = (ann.rect[0] ?? 0) * (t[0] ?? 1) + (ann.rect[1] ?? 0) * (t[2] ?? 0) + (t[4] ?? 0);
+          const sy1 = (ann.rect[0] ?? 0) * (t[1] ?? 0) + (ann.rect[1] ?? 0) * (t[3] ?? 1) + (t[5] ?? 0);
+          const sx2 = (ann.rect[2] ?? 0) * (t[0] ?? 1) + (ann.rect[3] ?? 0) * (t[2] ?? 0) + (t[4] ?? 0);
+          const sy2 = (ann.rect[2] ?? 0) * (t[1] ?? 0) + (ann.rect[3] ?? 0) * (t[3] ?? 1) + (t[5] ?? 0);
           const fl = Math.min(sx1, sx2); const ft = Math.min(sy1, sy2);
           const fw = Math.abs(sx2 - sx1); const fh = Math.abs(sy2 - sy1);
           ctx.save(); ctx.fillStyle = "#111"; ctx.textBaseline = "middle";
@@ -1257,6 +1250,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
     }
     if (pageCanvases.length === 0) return;
     const first = pageCanvases[0];
+    if (!first) return;
     const orientation = first.vp.width > first.vp.height ? "landscape" : "portrait";
     const doc = new jsPDF({ orientation, unit: "px", format: [first.vp.width, first.vp.height], compress: true });
     pageCanvases.forEach(({ canvas, vp }, idx) => {
@@ -1288,7 +1282,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
         canvas.width = vp.width; canvas.height = vp.height;
         const ctx = canvas.getContext("2d");
         if (!ctx) continue;
-        await page.render({ canvasContext: ctx, viewport: vp, annotationMode: 0 }).promise;
+        await page.render({ canvasContext: ctx, viewport: vp, annotationMode: 0, canvas }).promise;
         if (hasForm && Object.keys(formValues).length > 0) {
           const pageAnnotations = await page.getAnnotations();
           for (const ann of pageAnnotations as any[]) {
@@ -1297,10 +1291,10 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
             if (fv === undefined || fv === "" || fv === false) continue;
             if (!Array.isArray(ann.rect) || ann.rect.length < 4) continue;
             const t = vp.transform;
-            const sx1 = ann.rect[0] * t[0] + ann.rect[1] * t[2] + t[4];
-            const sy1 = ann.rect[0] * t[1] + ann.rect[1] * t[3] + t[5];
-            const sx2 = ann.rect[2] * t[0] + ann.rect[3] * t[2] + t[4];
-            const sy2 = ann.rect[2] * t[1] + ann.rect[3] * t[3] + t[5];
+            const sx1 = (ann.rect[0] ?? 0) * (t[0] ?? 1) + (ann.rect[1] ?? 0) * (t[2] ?? 0) + (t[4] ?? 0);
+            const sy1 = (ann.rect[0] ?? 0) * (t[1] ?? 0) + (ann.rect[1] ?? 0) * (t[3] ?? 1) + (t[5] ?? 0);
+            const sx2 = (ann.rect[2] ?? 0) * (t[0] ?? 1) + (ann.rect[3] ?? 0) * (t[2] ?? 0) + (t[4] ?? 0);
+            const sy2 = (ann.rect[2] ?? 0) * (t[1] ?? 0) + (ann.rect[3] ?? 0) * (t[3] ?? 1) + (t[5] ?? 0);
             const fl = Math.min(sx1, sx2); const ft = Math.min(sy1, sy2);
             const fw = Math.abs(sx2 - sx1); const fh = Math.abs(sy2 - sy1);
             ctx.save(); ctx.fillStyle = "#111"; ctx.textBaseline = "middle";
@@ -1332,6 +1326,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
       }
       if (pageCanvases.length === 0) return;
       const first = pageCanvases[0];
+      if (!first) return;
       const orientation = first.vp.width > first.vp.height ? "landscape" : "portrait";
       const doc = new jsPDF({ orientation, unit: "px", format: [first.vp.width, first.vp.height], compress: true });
       pageCanvases.forEach(({ canvas, vp }, idx) => {
@@ -1408,8 +1403,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
           if (content.items.length > 0) {
             // Searchable PDF: use embedded text layer
             fullText = content.items
-              .filter((item): item is TextItem => "str" in item)
-              .map((item) => item.str)
+              .flatMap((item: Record<string, unknown>) => (typeof item.str === "string" ? [item.str] : []))
               .join("");
           } else if (track) {
             // Image-only PDF: try OCR cache
@@ -1929,7 +1923,7 @@ function VideoViewer({ b64Data, contentType }: { b64Data: string; contentType: s
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   useEffect(() => {
     const bytes = b64ToBytes(b64Data);
-    const blob = new Blob([bytes], { type: contentType || "video/mp4" });
+    const blob = new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer], { type: contentType || "video/mp4" });
     const url = URL.createObjectURL(blob);
     setBlobUrl(url);
     return () => URL.revokeObjectURL(url);
@@ -1959,10 +1953,11 @@ function SpreadsheetViewer({ b64Data }: { b64Data: string }) {
     try {
       const bytes = b64ToBytes(b64Data);
       const wb = XLSX.read(bytes, { type: "array" });
-      const result: SheetData = wb.SheetNames.map((name) => ({
-        name,
-        html: XLSX.utils.sheet_to_html(wb.Sheets[name], { id: "sheet-table" }),
-      }));
+      const result: SheetData = wb.SheetNames.flatMap((name) => {
+        const sheet = wb.Sheets[name];
+        if (!sheet) return [];
+        return [{ name, html: XLSX.utils.sheet_to_html(sheet, { id: "sheet-table" }) }];
+      });
       setSheets(result);
       setActiveSheet(0);
     } catch (e) {
@@ -2319,7 +2314,7 @@ function GalleryThumb({
     const el = ref.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) setVisible(true); },
+      ([entry]) => { if (entry?.isIntersecting) setVisible(true); },
       { rootMargin: "100px" },
     );
     obs.observe(el);

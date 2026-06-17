@@ -58,6 +58,7 @@ export function AccountForm({ editing, onSaved, onCancel }: Props) {
     editing?.smtp_mode ?? "smtp",
   );
   const [isSendOnly, setIsSendOnly] = useState(Boolean(editing?.is_send_only));
+  const [isImapOnly, setIsImapOnly] = useState(Boolean(editing?.is_imap_only));
 
   const [smtpHost, setSmtpHost] = useState(editing?.smtp_host ?? "");
   const [smtpPort, setSmtpPort] = useState(editing?.smtp_port ?? 465);
@@ -261,6 +262,7 @@ export function AccountForm({ editing, onSaved, onCancel }: Props) {
           ? { apiKey: resendApiKey, fromAddress: resendFrom || email }
           : undefined,
       isSendOnly,
+      isImapOnly: isSendOnly ? false : isImapOnly,
       signatureHtml: signature,
     };
 
@@ -360,6 +362,33 @@ export function AccountForm({ editing, onSaved, onCancel }: Props) {
             </span>
           </label>
         </Field>
+
+        {!isSendOnly && (
+          <Field label="IMAP only" hint="Enable to receive mail on this account but hide it from the compose From dropdown.">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={isImapOnly}
+                onClick={() => setIsImapOnly((v) => !v)}
+                className={cn(
+                  "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                  isImapOnly ? "bg-accent" : "bg-[color:var(--border-strong)]",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
+                    isImapOnly ? "translate-x-4" : "translate-x-0.5",
+                  )}
+                />
+              </button>
+              <span className="text-[12px] text-muted">
+                {isImapOnly ? "Receive only (hidden from compose)" : "Available in compose"}
+              </span>
+            </label>
+          </Field>
+        )}
       </section>
 
       {!isSendOnly && (

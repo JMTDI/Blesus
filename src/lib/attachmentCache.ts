@@ -1,16 +1,25 @@
 /**
- * In-memory LRU cache for raw attachment base-64 data.
+ * Two-tier attachment cache:
+ *
+ * Tier 1 — In-memory LRU (fast, session-scoped, up to MAX_MEM_ENTRIES)
+ * Tier 2 — Persistent disk cache (survives restarts, up to DISK_CACHE_MAX_BYTES = 4 GB)
  *
  * Key format: `${accountId}:${folderPath}:${uid}:${index}`
  *
- * Keeps the last MAX_ENTRIES entries in memory so repeated opens/hovers of the
- * same attachment never hit the IMAP server again within a session.
+ * On load:  memory hit → return immediately
+ *           disk hit   → load from disk, promote to memory, update last_used in DB
+ *           miss       → fetch from IMAP, write to disk, store in memory
+ *
+ * Eviction: When total disk cache exceeds DISK_CACHE_MAX_BYTES, the LRU
+ *           entries (by last_used) are deleted until under the limit.
  */
 
 import { ipc, type ImapConfig } from "@/lib/ipc";
-import { getAccount, getAccountSecrets } from "@/lib/db";
+import { getAccount, getAccountSecrets, getDb } from "@/lib/db";
 
-const MAX_ENTRIES = 100;
+const DISK_CACHE_MAX_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB
+
+const MAX_ENTRIES = 200;
 
 // Ordered map — insertion order = LRU order (oldest first)
 const _cache = new Map<string, string>();
@@ -59,9 +68,107 @@ async function buildConfig(accountId: number): Promise<ImapConfig> {
   };
 }
 
+// ── Disk cache helpers ──────────────────────────────────────────────────────
+
+/** Sanitise a cache key into a safe filename. */
+function keyToFileName(key: string): string {
+  return key.replace(/[:/\\]/g, "_") + ".bin";
+}
+
+/** Look up a disk-cache entry, returns b64 or null. Updates last_used in DB. */
+async function diskGet(
+  accountId: number,
+  folderPath: string,
+  uid: number,
+  index: number,
+): Promise<string | null> {
+  try {
+    const db = await getDb();
+    const rows = await db.select<{ file_name: string }[]>(`SELECT file_name FROM attachment_cache WHERE account_id=$1 AND folder_path=$2 AND imap_uid=$3 AND att_index=$4`, [accountId, folderPath, uid, index]).catch(() => null);
+    const row = rows?.[0];
+    if (!row) return null;
+    // Try to read the file
+    const b64 = await ipc.attachmentCacheRead(row.file_name).catch(() => null);
+    if (b64 === null) {
+      // File missing — remove stale DB row
+      await db.execute(`DELETE FROM attachment_cache WHERE account_id=$1 AND folder_path=$2 AND imap_uid=$3 AND att_index=$4`, [accountId, folderPath, uid, index]).catch(() => {});
+      return null;
+    }
+    // Update last_used
+    await db.execute(`UPDATE attachment_cache SET last_used=unixepoch() WHERE account_id=$1 AND folder_path=$2 AND imap_uid=$3 AND att_index=$4`, [accountId, folderPath, uid, index]).catch(() => {});
+    return b64;
+  } catch {
+    return null;
+  }
+}
+
+/** Write attachment b64 to disk cache, recording metadata in DB. Evicts LRU if over limit. */
+async function diskPut(
+  accountId: number,
+  folderPath: string,
+  uid: number,
+  index: number,
+  b64: string,
+): Promise<void> {
+  try {
+    const key = cacheKey(accountId, folderPath, uid, index);
+    const fileName = keyToFileName(key);
+    // byte size = b64 length * 0.75 (approximate decoded size)
+    const byteSize = Math.ceil(b64.length * 0.75);
+
+    await ipc.attachmentCacheWrite(fileName, b64);
+
+    const db = await getDb();
+    await db.execute(
+      `INSERT OR REPLACE INTO attachment_cache
+       (account_id, folder_path, imap_uid, att_index, file_name, byte_size, last_used)
+       VALUES ($1, $2, $3, $4, $5, $6, unixepoch())`,
+      [accountId, folderPath, uid, index, fileName, byteSize],
+    ).catch(() => {});
+
+    // Evict LRU entries if total exceeds 4 GB
+    void evictIfNeeded();
+  } catch {
+    // Non-fatal — disk cache failure just means we skip persisting
+  }
+}
+
+/** Evict LRU disk cache entries until total size is under DISK_CACHE_MAX_BYTES. */
+async function evictIfNeeded(): Promise<void> {
+  try {
+    const db = await getDb();
+    type CacheSizeRow = { total_bytes: number };
+    const sizeResult = await db.select<CacheSizeRow[]>(
+      "SELECT COALESCE(SUM(byte_size),0) AS total_bytes FROM attachment_cache", [],
+    ).catch(() => null);
+    if (!sizeResult || !sizeResult[0]) return;
+    let totalBytes = sizeResult[0].total_bytes ?? 0;
+    if (totalBytes <= DISK_CACHE_MAX_BYTES) return;
+
+    type LruRow = { file_name: string; byte_size: number; account_id: number; folder_path: string; imap_uid: number; att_index: number };
+    const lruRows = await db.select<LruRow[]>(
+      `SELECT file_name, byte_size, account_id, folder_path, imap_uid, att_index
+       FROM attachment_cache ORDER BY last_used ASC LIMIT 100`, [],
+    ).catch(() => null);
+    if (!lruRows) return;
+
+    for (const row of lruRows) {
+      if (totalBytes <= DISK_CACHE_MAX_BYTES) break;
+      await ipc.attachmentCacheDelete(row.file_name).catch(() => {});
+      await db.execute(
+        `DELETE FROM attachment_cache WHERE account_id=$1 AND folder_path=$2 AND imap_uid=$3 AND att_index=$4`,
+        [row.account_id, row.folder_path, row.imap_uid, row.att_index],
+      ).catch(() => {});
+      totalBytes -= row.byte_size;
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
 /**
- * Returns the base-64 data for the attachment, hitting the cache first.
- * On a cache miss the data is fetched via IMAP and stored for future calls.
+ * Returns the base-64 data for the attachment, checking memory then disk before
+ * fetching from IMAP. Fetched data is persisted to the disk cache for future sessions.
  */
 export async function loadAttachmentB64(
   accountId: number,
@@ -70,16 +177,27 @@ export async function loadAttachmentB64(
   index: number,
 ): Promise<string> {
   const key = cacheKey(accountId, folderPath, uid, index);
-  const cached = _cache.get(key);
-  if (cached !== undefined) {
-    // Refresh LRU position
+
+  // Tier 1: memory cache
+  const memoryCached = _cache.get(key);
+  if (memoryCached !== undefined) {
     _cache.delete(key);
-    _cache.set(key, cached);
-    return cached;
+    _cache.set(key, memoryCached);
+    return memoryCached;
   }
+
+  // Tier 2: disk cache
+  const diskCached = await diskGet(accountId, folderPath, uid, index);
+  if (diskCached !== null) {
+    put(key, diskCached); // promote to memory
+    return diskCached;
+  }
+
+  // Tier 3: fetch from IMAP and persist to both caches
   const cfg = await buildConfig(accountId);
   const b64 = await ipc.imapLoadAttachmentB64(cfg, folderPath, uid, index);
   put(key, b64);
+  void diskPut(accountId, folderPath, uid, index, b64);
   return b64;
 }
 

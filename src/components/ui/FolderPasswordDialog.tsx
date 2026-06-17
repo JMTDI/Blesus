@@ -195,7 +195,7 @@ function PasswordInput({
   onChange,
   show,
   onToggleShow,
-  inputRef,
+  inputRef: _inputRef,
   placeholder,
 }: {
   label: string;
@@ -203,7 +203,7 @@ function PasswordInput({
   onChange: (v: string) => void;
   show: boolean;
   onToggleShow: () => void;
-  inputRef?: React.RefObject<HTMLInputElement>;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
   placeholder?: string;
 }) {
   return (
@@ -213,7 +213,6 @@ function PasswordInput({
       </span>
       <div className="relative">
         <Input
-          ref={inputRef}
           type={show ? "text" : "password"}
           value={value}
           onChange={(e) => onChange(e.target.value)}

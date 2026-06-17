@@ -134,5 +134,17 @@ pub fn all() -> Vec<Migration> {
             sql: include_str!("../../migrations/22_drafts_attachments_repair.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 23,
+            description: "imap-only accounts (has inbox, hidden from compose From dropdown)",
+            sql: include_str!("../../migrations/23_imap_only.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 24,
+            description: "persistent attachment disk cache tracking table",
+            sql: include_str!("../../migrations/24_attachment_cache.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }

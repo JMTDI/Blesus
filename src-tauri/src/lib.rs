@@ -44,7 +44,17 @@ fn resolve_data_dir() -> PathBuf {
     let data_dir = {
         let exe = std::env::current_exe().expect("current_exe");
         let exe_dir = exe.parent().expect("exe parent").to_path_buf();
-        exe_dir.join("cursus-files")
+
+        // One-shot rename: cursus-files → blesus-files (rebranding migration).
+        // Do this BEFORE create_dir_all so we don't create an empty blesus-files
+        // alongside the existing cursus-files.
+        let old_data = exe_dir.join("cursus-files");
+        let new_data = exe_dir.join("blesus-files");
+        if old_data.exists() && !new_data.exists() {
+            let _ = std::fs::rename(&old_data, &new_data);
+        }
+
+        new_data
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -66,13 +76,31 @@ fn resolve_data_dir() -> PathBuf {
     // One-shot migration for users upgrading from a "flow.db"-era build.
     // Rename the SQLite main file plus its WAL/SHM siblings, but only if
     // the new name doesn't already exist (don't clobber a fresh DB).
-    let new_db = data_dir.join("cursus.db");
-    let old_db = data_dir.join("flow.db");
-    if old_db.exists() && !new_db.exists() {
-        let _ = std::fs::rename(&old_db, &new_db);
+    let new_db = data_dir.join("blesus.db");
+
+    // flow.db → blesus.db (oldest era)
+    let flow_db = data_dir.join("flow.db");
+    if flow_db.exists() && !new_db.exists() {
+        let _ = std::fs::rename(&flow_db, &new_db);
         for (old_name, new_name) in [
-            ("flow.db-wal", "cursus.db-wal"),
-            ("flow.db-shm", "cursus.db-shm"),
+            ("flow.db-wal", "blesus.db-wal"),
+            ("flow.db-shm", "blesus.db-shm"),
+        ] {
+            let oldp = data_dir.join(old_name);
+            let newp = data_dir.join(new_name);
+            if oldp.exists() && !newp.exists() {
+                let _ = std::fs::rename(&oldp, &newp);
+            }
+        }
+    }
+
+    // cursus.db → blesus.db (rebranding migration)
+    let cursus_db = data_dir.join("cursus.db");
+    if cursus_db.exists() && !new_db.exists() {
+        let _ = std::fs::rename(&cursus_db, &new_db);
+        for (old_name, new_name) in [
+            ("cursus.db-wal", "blesus.db-wal"),
+            ("cursus.db-shm", "blesus.db-shm"),
         ] {
             let oldp = data_dir.join(old_name);
             let newp = data_dir.join(new_name);
@@ -102,7 +130,7 @@ fn is_tray_available(app: tauri::AppHandle) -> bool {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let data_dir = resolve_data_dir();
-    let db_path = data_dir.join("cursus.db");
+    let db_path = data_dir.join("blesus.db");
     // SQLx's sqlite URL parser accepts forward slashes on Windows; normalise
     // backslashes so the connection string is valid on every platform.
     let db_url = format!(
@@ -249,6 +277,10 @@ pub fn run() {
             commands::backup_read_file,
             commands::log_frontend,
             commands::get_logs_dir,
+            commands::get_attachment_cache_dir,
+            commands::attachment_cache_read,
+            commands::attachment_cache_write,
+            commands::attachment_cache_delete,
             get_database_url,
             is_tray_available,
             ocr::ocr_page,

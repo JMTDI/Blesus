@@ -438,9 +438,70 @@ pub fn log_frontend(level: String, message: String) {
     }
 }
 
-/// Absolute path of `<exe_dir>/cursus-files/logs/`. Used by the "Open log
+/// Absolute path of `<exe_dir>/blesus-files/logs/`. Used by the "Open log
 /// folder" button in Settings → About.
 #[tauri::command]
 pub fn get_logs_dir(state: tauri::State<'_, crate::LogsDir>) -> String {
     state.0.to_string_lossy().into_owned()
+}
+
+/// Returns the absolute path to the attachment cache directory.
+#[tauri::command]
+pub fn get_attachment_cache_dir(state: tauri::State<'_, crate::LogsDir>) -> String {
+    let logs_dir = &state.0;
+    let cache_dir = logs_dir
+        .parent()
+        .unwrap_or(logs_dir)
+        .join("attachment-cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+    cache_dir.to_string_lossy().into_owned()
+}
+
+/// Reads a cached attachment file and returns it as base64.
+#[tauri::command]
+pub fn attachment_cache_read(
+    state: tauri::State<'_, crate::LogsDir>,
+    file_name: String,
+) -> Result<String> {
+    use base64::Engine;
+    let logs_dir = &state.0;
+    let cache_dir = logs_dir.parent().unwrap_or(logs_dir).join("attachment-cache");
+    let bytes = std::fs::read(cache_dir.join(&file_name))
+        .map_err(|e| crate::Error::Imap(format!("cache read {file_name}: {e}")))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// Writes base64 attachment data to a cache file on disk.
+#[tauri::command]
+pub fn attachment_cache_write(
+    state: tauri::State<'_, crate::LogsDir>,
+    file_name: String,
+    b64: String,
+) -> Result<()> {
+    use base64::Engine;
+    let logs_dir = &state.0;
+    let cache_dir = logs_dir.parent().unwrap_or(logs_dir).join("attachment-cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&b64)
+        .map_err(|e| crate::Error::Imap(format!("base64 decode: {e}")))?;
+    std::fs::write(cache_dir.join(&file_name), &bytes)
+        .map_err(|e| crate::Error::Imap(format!("cache write {file_name}: {e}")))?;
+    Ok(())
+}
+
+/// Deletes a cached attachment file from disk.
+#[tauri::command]
+pub fn attachment_cache_delete(
+    state: tauri::State<'_, crate::LogsDir>,
+    file_name: String,
+) -> Result<()> {
+    let logs_dir = &state.0;
+    let cache_dir = logs_dir.parent().unwrap_or(logs_dir).join("attachment-cache");
+    let path = cache_dir.join(&file_name);
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .map_err(|e| crate::Error::Imap(format!("cache delete {file_name}: {e}")))?;
+    }
+    Ok(())
 }

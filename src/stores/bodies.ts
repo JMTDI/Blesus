@@ -172,7 +172,6 @@ export const useBodiesStore = create<BodiesStore>((set, get) => ({
         // We have a search_index row. Use the best available text, and append
         // a note when the full body wasn't available so the user knows why the
         // message may appear truncated.
-        const notice = "(This message could not be fetched from the server — it may have been moved or deleted.)";
         const text = indexed.text_body
           ?? (indexed.snippet ? indexed.snippet : null);
         set((s) => ({

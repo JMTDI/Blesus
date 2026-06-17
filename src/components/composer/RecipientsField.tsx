@@ -48,7 +48,7 @@ function parseAddressTokens(csv: string): string[] {
 /** Short display label for a chip — extracts display name or falls back to the full string. */
 function chipLabel(addr: string): string {
   const named = addr.match(/^"?(.+?)"?\s*<[^>]+>$/);
-  if (named) return named[1].replace(/^"|"$/g, "").trim();
+  if (named) return (named[1] ?? "").replace(/^"|"$/g, "").trim();
   return addr.trim();
 }
 

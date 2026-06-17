@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { Search as SearchIcon, Star } from "lucide-react";
-import { cn } from "@/lib/cn";
 import { countSearchIndexed, searchMessages, type SearchHit } from "@/lib/db";
 import { indexAllMailForSearch, type FullSyncProgress } from "@/lib/fullSync";
 import { useAccountsStore } from "@/stores/accounts";

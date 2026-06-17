@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import type { Attachment } from "@/lib/ipc";
 import { loadAttachmentB64 } from "@/lib/attachmentCache";
-import { getAccount, getAccountSecrets } from "@/lib/db";
 
 export interface PreviewTrack {
   accountId: number;

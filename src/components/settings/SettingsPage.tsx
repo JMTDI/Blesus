@@ -32,7 +32,6 @@ import { indexAllMail } from "@/lib/indexAllMail";
 import { useAccountsStore } from "@/stores/accounts";
 import { useThreadsStore } from "@/stores/threads";
 import { toast } from "@/stores/toasts";
-import { ipc } from "@/lib/ipc";
 import {
   deleteAccount,
   deleteRule,
@@ -783,7 +782,7 @@ function autoLockLabel(min: number): string {
 }
 
 function FullIndexRow() {
-  const { phase, foldersDone, foldersTotal, bodiesDone, bodiesTotal, bodiesFailed, attachmentsDone, attachmentsTotal, attachmentsCurrentFile, error, cancelRequested } =
+  const { phase, foldersDone, foldersTotal, bodiesDone, bodiesTotal, bodiesFailed, attachmentsDone, attachmentsTotal, attachmentsCurrentFile, cancelRequested } =
     useFullSyncStore();
   const cancel = useFullSyncStore((s) => s.cancel);
   const isRunning = phase === "headers" || phase === "bodies" || phase === "attachments";
@@ -1685,6 +1684,9 @@ const FEATURE_DOC_SECTIONS: Array<{ title: string; items: string[] }> = [
       "\"Refresh all folders\" button re-syncs every folder across all accounts and rebuilds thread message lists.",
       "Auto-discovery for known IMAP/SMTP providers from email domain.",
       "Login throttling that respects per-10-minute server limits.",
+      "Persistent 4 GB attachment disk cache — attachments are saved to blesus-files/attachment-cache/ on first open and loaded from disk on subsequent opens, surviving app restarts. LRU eviction keeps total size under 4 GB.",
+      "200-entry in-memory attachment cache — the 200 most recently opened attachments are kept in RAM for instant access within a session (LRU eviction promotes disk-cached entries back to memory on re-open).",
+      "Transient IMAP server shutdown auto-retry — if the server returns a BYE System shutdown response, Blesus automatically reconnects once before surfacing an error to the UI.",
     ],
   },
   {
@@ -1721,31 +1723,17 @@ const FEATURE_DOC_SECTIONS: Array<{ title: string; items: string[] }> = [
     ],
   },
   {
-    title: "Keyboard",
-    items: [
-      "Gmail/Spark-style single-letter shortcuts for navigation, selection, actions, and compose. See the table above for the full list.",
-    ],
-  },
-  {
-    title: "Database Migrations",
-    items: [
-      "01 — initial schema (accounts, folders, messages, bodies).",
-      "02 — drafts metadata table.",
-      "03 — full-text search index.",
-      "04 — sent_log for outgoing-mail dedup.",
-      "05 — messages_v2 schema refinements.",
-      "06 — scheduled_sends.",
-      "07 — rules.",
-      "08 — account_sort_order.",
-      "body_is_raw column added to drafts for wire-faithful HTML preservation.",
-      "Bounding-box cache table for Windows-OCR-derived PDF text selection.",
-    ],
-  },
-  {
     title: "Backup & Restore",
     items: [
-      "Account export to encrypted file.",
-      "Account import from previously exported file (with conflict handling).",
+      "Account export to encrypted .blesus file.",
+      "Account import from previously exported .blesus file (with conflict handling).",
+    ],
+  },
+  {
+    title: "Account Options",
+    items: [
+      "Send only accounts — account has no inbox and appears only as a From option in the Composer.",
+      "IMAP only accounts — account receives mail normally but is hidden from the Compose From dropdown. Useful for monitoring accounts you never send from.",
     ],
   },
 ];

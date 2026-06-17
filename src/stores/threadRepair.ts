@@ -103,6 +103,8 @@ export const useThreadRepairStore = create<ThreadRepairState>((set, get) => ({
           folderId: thread.folderId,
           threadId: thread.id,
           subject: thread.subject,
+          originalFolderPath: "",
+          messageId: null,
           groupId: null,
           addedAt: Math.floor(Date.now() / 1000),
         };

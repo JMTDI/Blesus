@@ -27,7 +27,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; connect-src 'self' http://ipc.localhost https://api.resend.com https://api.resend.com"
+      "csp": "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval' https://cdn.jsdelivr.net; worker-src blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://ipc.localhost https://api.resend.com; img-src 'self' data: blob: https: http:"
     },
     "trayIcon": null
   },

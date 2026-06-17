@@ -21,6 +21,8 @@ export interface Account {
   unreadCount: number;
   signatureHtml: string | null;
   isSendOnly: boolean;
+  /** When true, account receives mail (IMAP) but is hidden from the compose From dropdown. */
+  isImapOnly: boolean;
 }
 
 export interface MailFolder {

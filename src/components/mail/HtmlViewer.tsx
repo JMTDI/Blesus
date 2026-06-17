@@ -100,7 +100,7 @@ function autolinkify(html: string): string {
 
   const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
   const targets: Text[] = [];
-  let n: Node | null;
+  let n: Node | null = null;
   while ((n = walker.nextNode())) {
     if (isSkip(n)) continue;
     const t = n as Text;
@@ -185,7 +185,7 @@ function stripQuotedHtml(html: string): { main: string; hasQuotes: boolean } {
           // Remove cur and every sibling that follows it
           let toRemove: Node | null = cur;
           while (toRemove) {
-            const next = toRemove.nextSibling;
+            const next: Node | null = toRemove.nextSibling;
             parent.removeChild(toRemove);
             toRemove = next;
           }
@@ -297,11 +297,13 @@ async function downloadImage(src: string) {
     let defaultName = "image.png";
 
     if (src.startsWith("data:")) {
-      const [header, b64] = src.split(",", 2);
+      const _parts = src.split(",", 2);
+      const header: string = _parts[0] ?? "";
+      const b64 = _parts[1] ?? "";
       const mime = header.match(/data:([^;]+)/)?.[1] ?? "image/png";
       const ext = mime.split("/")[1]?.split("+")[0] ?? "png";
       defaultName = `image.${ext}`;
-      const binary = atob(b64);
+      const binary = b64 ? atob(b64) : "";
       bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     } else {
@@ -312,7 +314,8 @@ async function downloadImage(src: string) {
       bytes = new Uint8Array(ab);
     }
 
-    const ext = defaultName.split(".").pop() ?? "jpg";
+    // ext used for file dialog filter
+    void defaultName.split(".").pop();
     const path = await saveDialog({
       defaultPath: defaultName,
       filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"] }],
@@ -385,6 +388,23 @@ export function HtmlViewer({ html, uid }: Props) {
     const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg-raised");
     const linkColor = getComputedStyle(document.documentElement).getPropertyValue("--accent");
 
+    // Detect dark theme by checking if the background luminance is low.
+    // Parse the CSS color value to determine brightness.
+    const isDark = (() => {
+      const tmp = document.createElement("div");
+      tmp.style.color = bg.trim();
+      document.body.appendChild(tmp);
+      const computed = getComputedStyle(tmp).color;
+      document.body.removeChild(tmp);
+      const m = computed.match(/\d+/g);
+      if (!m || m.length < 3) return false;
+      const r = parseInt(m[0] ?? "0");
+      const g = parseInt(m[1] ?? "0");
+      const b = parseInt(m[2] ?? "0");
+      // Standard luminance formula
+      return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+    })();
+
     doc.open();
     doc.write(`<!doctype html>
 <html>
@@ -414,6 +434,27 @@ export function HtmlViewer({ html, uid }: Props) {
         opacity: 0.8;
       }
       pre { overflow-x: auto; background: rgba(128,128,128,0.08); padding: 10px; border-radius: 6px; }
+      ${isDark ? `
+      /* Dark theme: override hardcoded dark/black text colors that are invisible on dark backgrounds.
+         We target common patterns used in HTML emails. */
+      *:not(a) {
+        color: inherit !important;
+      }
+      body, body * {
+        border-color: rgba(128,128,128,0.3) !important;
+      }
+      /* Restore white/light text that was intentionally light */
+      [style*="color:#fff"], [style*="color: #fff"],
+      [style*="color:white"], [style*="color: white"],
+      [style*="color:#ffffff"], [style*="color: #ffffff"],
+      [style*="color:rgb(255,255,255)"], [style*="color: rgb(255,255,255)"] {
+        color: #ffffff !important;
+      }
+      /* Let background colors through — some emails use colored sections */
+      [bgcolor], [style*="background"] {
+        color: inherit !important;
+      }
+      ` : ''}
     </style>
   </head>
   <body>${renderedHtml}</body>

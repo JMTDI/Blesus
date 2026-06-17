@@ -419,9 +419,10 @@ const RawBodyPreview = React.forwardRef<
 
 /** Extract plain-text subject from the subject contenteditable div,
  * converting <img data-flag alt="🇺🇸"> nodes back to their Unicode alt values. */
-function getSubjectText(div: HTMLDivElement): string {  let text = "";
+function getSubjectText(div: HTMLDivElement): string {
+  let text = "";
   for (const node of Array.from(div.childNodes)) {
-    if (node.nodeType === Node.TEXT_NODE) {
+    if (node.nodeType === globalThis.Node.TEXT_NODE) {
       text += node.textContent ?? "";
     } else if (node instanceof HTMLImageElement && node.hasAttribute("data-flag")) {
       text += node.alt;
@@ -445,8 +446,10 @@ async function inlineFlagEmojis(html: string): Promise<string> {
   const srcAttrRe = /\bsrc="([^"]*)"/i;
   const srcs = new Set<string>();
   for (const m of html.matchAll(flagImgRe)) {
-    const srcMatch = srcAttrRe.exec(m[1]);
-    if (srcMatch && !srcMatch[1].startsWith("data:")) srcs.add(srcMatch[1]);
+    const attrs = m[1];
+    if (!attrs) continue;
+    const srcMatch = srcAttrRe.exec(attrs);
+    if (srcMatch?.[1] && !srcMatch[1].startsWith("data:")) srcs.add(srcMatch[1]);
   }
   if (srcs.size === 0) return html;
 
@@ -471,7 +474,7 @@ async function inlineFlagEmojis(html: string): Promise<string> {
   if (dataUris.size === 0) return html;
 
   // Swap src values in-place without re-serialising the whole document
-  return html.replace(flagImgRe, (imgTag, attrs) =>
+  return html.replace(flagImgRe, (imgTag) =>
     imgTag.replace(srcAttrRe, (_, src) => {
       const uri = dataUris.get(src);
       return uri ? `src="${uri}"` : `src="${src}"`;
@@ -497,7 +500,7 @@ export function Composer() {
   const close = useComposerStore((s) => s.close);
 
   const activeAccountId = useAccountsStore((s) => s.activeAccountId);
-  const accounts = useAccountsStore((s) => s.accounts);
+  const accounts = useAccountsStore((s) => s.accounts).filter((a) => !a.isImapOnly);
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
 
   const [to, setTo] = useState("");
@@ -1209,7 +1212,7 @@ export function Composer() {
                   >
                     {accounts.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.display_name ? `${a.display_name} <${a.email}>` : a.email}
+                        {a.displayName ? `${a.displayName} <${a.email}>` : a.email}
                       </option>
                     ))}
                   </select>
@@ -1759,7 +1762,7 @@ function Toolbar({
       const ext = path.split(".").pop()?.toLowerCase() ?? "jpeg";
       const mime = IMAGE_MIME[ext] ?? "image/jpeg";
       let bin = "";
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i] ?? 0);
       const src = `data:${mime};base64,${btoa(bin)}`;
       const raw = rawBodyRef?.current;
       if (raw) {
@@ -1800,7 +1803,7 @@ function Toolbar({
       const filename = `photo-${Date.now()}.jpg`;
       const sep = tmp.endsWith("/") || tmp.endsWith("\\") ? "" : "/";
       const destPath = `${tmp}${sep}${filename}`;
-      const b64 = dataUrl.split(",")[1];
+      const b64 = dataUrl.split(",")[1] ?? "";
       const binary = atob(b64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -1956,7 +1959,8 @@ function PortalEmojiPicker({
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      const t = e.target as Node;
+      const t = e.target instanceof Element ? e.target : null;
+      if (!t) return;
       if (anchorRef.current?.contains(t) || portalRef.current?.contains(t)) return;
       onClose();
     };
@@ -2013,7 +2017,8 @@ function PortalLinkDialog({
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      const t = e.target as Node;
+      const t = e.target instanceof Element ? e.target : null;
+      if (!t) return;
       if (anchorRef.current?.contains(t) || portalRef.current?.contains(t)) return;
       onClose();
     };
@@ -2365,7 +2370,8 @@ function HighlightPicker({ currentHighlight, onHighlight }: { currentHighlight: 
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target instanceof Element ? e.target : null;
+      if (t && containerRef.current && !containerRef.current.contains(t)) setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -2441,7 +2447,8 @@ function ColorPicker({ currentColor, onColor }: { currentColor: string; onColor:
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target instanceof Element ? e.target : null;
+      if (t && containerRef.current && !containerRef.current.contains(t)) setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
