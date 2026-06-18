@@ -152,5 +152,17 @@ pub fn all() -> Vec<Migration> {
             sql: include_str!("../../migrations/25_fix_null_received_at.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 26,
+            description: "OCR cache folder independence placeholder",
+            sql: include_str!("../../migrations/26_ocr_cache_no_folder.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 27,
+            description: "add message_id_header to attachment_ocr_cache for cross-folder lookup",
+            sql: include_str!("../../migrations/27_ocr_cache_message_id.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }

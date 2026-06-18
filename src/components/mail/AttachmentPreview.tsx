@@ -659,7 +659,7 @@ const PdfPage = forwardRef<HTMLDivElement, {
           // 1. Try the DB cache (populated by a previous open or reindex)
           if (track) {
             const cached = await getOcrCache(
-              track.accountId, track.folderPath, track.uid,
+              track.accountId, track.uid,
               track.attachment.index, pageNum,
             ).catch(() => null);
             if (cached) {
@@ -704,7 +704,7 @@ const PdfPage = forwardRef<HTMLDivElement, {
             // Persist normalised coords
             if (track) {
               setOcrCache(
-                track.accountId, track.folderPath, track.uid,
+                track.accountId, track.uid,
                 track.attachment.index, pageNum, normalizedWords,
               ).catch(() => {});
             }
@@ -1408,7 +1408,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
           } else if (track) {
             // Image-only PDF: try OCR cache
             const cached = await getOcrCache(
-              track.accountId, track.folderPath, track.uid,
+              track.accountId, track.uid,
               track.attachment.index, idx + 1,
             ).catch(() => null);
             if (cached && cached.length > 0) {

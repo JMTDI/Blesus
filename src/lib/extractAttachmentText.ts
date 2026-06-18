@@ -16,7 +16,7 @@ import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import { createWorker } from "tesseract.js";
 import { invoke } from "@tauri-apps/api/core";
-import { setOcrCache } from "@/lib/db";
+import { getOcrCache, setOcrCache } from "@/lib/db";
 import type { OcrWord } from "@/lib/db";
 
 // Configure pdfjs worker (idempotent — safe to call from multiple modules)
@@ -34,12 +34,15 @@ const MAX_B64_LEN = 7_340_032; // 5 MB * (4/3)
 /** Max extracted characters to store per attachment */
 const MAX_CHARS = 20_000;
 
-/** Cache key passed from the indexer so OCR results are stored for the viewer */
+/** Cache key passed from the indexer so OCR results are stored for the viewer.
+ *  folder_path is intentionally excluded — the cache is keyed by imap_uid.
+ *  messageIdHeader is stored alongside so the cache can be found by Message-ID
+ *  after an IMAP MOVE assigns a new UID (e.g. Archive). */
 export interface OcrCacheKey {
   accountId: number;
-  folderPath: string;
   uid: number;
   attachmentIndex: number;
+  messageIdHeader?: string | null;
 }
 
 // Lazy singleton Tesseract worker (non-Windows fallback)
@@ -84,7 +87,17 @@ async function extractPdfText(b64: string, cacheKey?: OcrCacheKey, forceOcr?: bo
       continue;
     }
 
-    // Image-only page — render canvas and OCR
+    // Image-only page — check cache first before rendering/OCR-ing.
+    if (cacheKey && !forceOcr) {
+      const cached = await getOcrCache(
+        cacheKey.accountId, cacheKey.uid, cacheKey.attachmentIndex, pageNum,
+      ).catch(() => null);
+      if (cached && cached.length > 0) {
+        parts.push(cached.map((w) => w.text).join(" ").trim());
+        continue;
+      }
+    }
+
     const OCR_SCALE = 2.0;
     const MAX_OCR_PX = 2048;
     const rawVp = page.getViewport({ scale: OCR_SCALE });
@@ -117,8 +130,9 @@ async function extractPdfText(b64: string, cacheKey?: OcrCacheKey, forceOcr?: bo
           h: w.h * toScale1,
         }));
         setOcrCache(
-          cacheKey.accountId, cacheKey.folderPath, cacheKey.uid,
+          cacheKey.accountId, cacheKey.uid,
           cacheKey.attachmentIndex, pageNum, normalised,
+          cacheKey.messageIdHeader,
         ).catch(() => {});
       }
     } catch (err) {

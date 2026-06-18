@@ -18,6 +18,9 @@ import {
   normalizeSubject,
   listRules,
   parseNameEmail,
+  getOcrTextByMessageId,
+  upsertAttachmentText,
+  getSearchIndexBody,
   seedContact,
   updateMessageFlags,
   upsertMessageSummary,
@@ -933,16 +936,33 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
           void applyRulesToFresh(accountId, folderId, folderPath, fresh).catch(
             (err) => console.warn("rules engine failed", err),
           );
-          // Background-index the body of new arrivals so they're instantly
-          // available for full-text search without requiring a manual sync.
-          if (folderId > 0) {
-            void indexNewArrivals(
-              accountId,
-              folderPath,
-              folderId,
-              fresh.map((s) => s.uid),
-            ).catch(() => {});
-          }
+        }
+        // Background-index the body+attachments of ANY summary whose
+        // search_index row is missing or unindexed. This catches:
+        //   • new arrivals above the high-water mark (normal path)
+        //   • messages moved INTO this folder (new UID from IMAP MOVE)
+        //   • messages re-appearing after a UID reuse / pruning edge case
+        //   • first-fetch READ messages that haven't been indexed yet
+        // We pre-filter to UIDs that have attachments OR aren't yet indexed
+        // so we don't refetch bodies the indexer already processed.
+        if (folderId > 0 && summaries.length > 0) {
+          void (async () => {
+            try {
+              const allUids = summaries.map((s) => s.uid);
+              const indexedUids = new Set<number>(
+                await Promise.all(
+                  allUids.map(async (uid) => {
+                    const row = await getSearchIndexBody(accountId, folderPath, uid).catch(() => null);
+                    return row?.attachments_indexed_at != null ? uid : -1;
+                  }),
+                ).then((arr) => arr.filter((u) => u > 0)),
+              );
+              const needsIndex = allUids.filter((u) => !indexedUids.has(u));
+              if (needsIndex.length > 0) {
+                await indexNewArrivals(accountId, folderPath, folderId, needsIndex);
+              }
+            } catch { /* best-effort */ }
+          })();
         }
       }
 
@@ -960,6 +980,19 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
           snippet: s.snippet,
           receivedAt: s.date,
         }).catch(() => {});
+
+        // OCR backfill: for messages moved between folders (new UID assigned),
+        // check OCR cache by Message-ID and write attachment_text if found.
+        // This makes moved messages searchable in Trash, Archive, etc. without
+        // needing a full re-index.
+        if (s.messageId && s.hasAttachments) {
+          // No att_index → returns text across ALL attachments for this message.
+          void getOcrTextByMessageId(accountId, s.messageId).then((text) => {
+            if (text) {
+              void upsertAttachmentText(accountId, folderPath, s.uid, text).catch(() => {});
+            }
+          }).catch(() => {});
+        }
 
         // Seed the composer autocomplete with real senders — skip newsletters
         // and automated transactional mail so the pool stays clean. seedContact

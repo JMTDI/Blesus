@@ -850,9 +850,65 @@ export interface OcrWord {
 }
 
 /** Returns cached OCR words for one PDF page, or null if not yet cached. */
+/** Returns all cached OCR words for a message identified by message_id_header,
+ *  concatenated as plain text, across all pages for the given att_index.
+ *  Returns null if no cache entry exists.
+ *  Used by the indexer so moved messages (new UID in Archive) still get their
+ *  attachment text indexed without re-running OCR. */
+/** Look up the message_id_header for a specific (account_id, imap_uid) pair.
+ *  Used by indexNewArrivals to check the OCR cache cross-folder before re-OCRing. */
+export async function getMessageIdHeaderForUid(
+  accountId: number,
+  imapUid: number,
+): Promise<string | null> {
+  const db = await getDb();
+  const rows = await db.select<{ message_id_header: string | null }[]>(
+    `SELECT message_id_header FROM messages WHERE account_id = $1 AND imap_uid = $2 LIMIT 1`,
+    [accountId, imapUid],
+  );
+  return rows[0]?.message_id_header ?? null;
+}
+
+export async function getOcrTextByMessageId(
+  accountId: number,
+  messageIdHeader: string,
+  attIndex?: number,
+): Promise<string | null> {
+  const db = await getDb();
+  // Query directly from message_id_header column — no join through messages
+  // needed, so this works even after the source-folder messages row is deleted.
+  // If attIndex is provided, filter to that attachment only; otherwise return
+  // text for all attachments (used for the cross-folder backfill in fetchFolder).
+  const rows = await db.select<{ words_json: string }[]>(
+    attIndex !== undefined
+      ? `SELECT words_json
+           FROM attachment_ocr_cache
+          WHERE account_id = $1
+            AND message_id_header = $2
+            AND att_index = $3
+          ORDER BY att_index ASC, page_num ASC`
+      : `SELECT words_json
+           FROM attachment_ocr_cache
+          WHERE account_id = $1
+            AND message_id_header = $2
+          ORDER BY att_index ASC, page_num ASC`,
+    attIndex !== undefined ? [accountId, messageIdHeader, attIndex] : [accountId, messageIdHeader],
+  );
+  if (rows.length === 0) return null;
+  const parts: string[] = [];
+  for (const row of rows) {
+    try {
+      const words = JSON.parse(row.words_json) as { text: string }[];
+      parts.push(words.map((w) => w.text).join(" ").trim());
+    } catch { /* skip malformed rows */ }
+  }
+  const text = parts.filter(Boolean).join("\n").trim();
+  return text.length > 0 ? text : null;
+}
+
+
 export async function getOcrCache(
   accountId: number,
-  folderPath: string,
   imapUid: number,
   attIndex: number,
   pageNum: number,
@@ -860,9 +916,9 @@ export async function getOcrCache(
   const db = await getDb();
   const rows = await db.select<{ words_json: string }[]>(
     `SELECT words_json FROM attachment_ocr_cache
-      WHERE account_id = $1 AND folder_path = $2 AND imap_uid = $3
-        AND att_index = $4 AND page_num = $5`,
-    [accountId, folderPath, imapUid, attIndex, pageNum],
+      WHERE account_id = $1 AND imap_uid = $2
+        AND att_index = $3 AND page_num = $4`,
+    [accountId, imapUid, attIndex, pageNum],
   );
   if (rows.length === 0) return null;
   const first = rows[0];
@@ -874,18 +930,18 @@ export async function getOcrCache(
 /** Writes (or replaces) the cached OCR words for one PDF page. */
 export async function setOcrCache(
   accountId: number,
-  folderPath: string,
   imapUid: number,
   attIndex: number,
   pageNum: number,
   words: OcrWord[],
+  messageIdHeader?: string | null,
 ): Promise<void> {
   const db = await getDb();
   await db.execute(
     `INSERT OR REPLACE INTO attachment_ocr_cache
-       (account_id, folder_path, imap_uid, att_index, page_num, words_json, created_at)
+       (account_id, imap_uid, att_index, page_num, words_json, message_id_header, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, unixepoch())`,
-    [accountId, folderPath, imapUid, attIndex, pageNum, JSON.stringify(words)],
+    [accountId, imapUid, attIndex, pageNum, JSON.stringify(words), messageIdHeader ?? null],
   );
 }
 

@@ -31,6 +31,8 @@ import {
   getMessageBody,
   listOrphanedBodyMessages,
   pruneSearchIndex,
+  getOcrTextByMessageId,
+  getMessageIdHeaderForUid,
 } from "@/lib/db";
 import { loadAttachmentB64 } from "@/lib/attachmentCache";
 import { extractAttachmentText } from "@/lib/extractAttachmentText";
@@ -337,7 +339,7 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
                     b64,
                     att.contentType ?? "",
                     att.filename,
-                    { accountId: folderGroup.accountId, folderPath: folderGroup.folderPath, uid: body.uid, attachmentIndex: att.index } satisfies OcrCacheKey,
+                    { accountId: folderGroup.accountId, uid: body.uid, attachmentIndex: att.index } satisfies OcrCacheKey,
                   );
                   if (attText) attachmentTexts.push(attText);
                 } catch {
@@ -437,6 +439,7 @@ export async function extractAllAttachments(
     folderId: number;
     folderPath: string;
     uid: number;
+    messageIdHeader: string | null;
     indexable: Attachment[];
   }
 
@@ -480,6 +483,7 @@ export async function extractAllAttachments(
             folderId: folder.id,
             folderPath: folder.path,
             uid: msg.imap_uid,
+            messageIdHeader: msg.message_id_header ?? null,
             indexable,
           });
         }
@@ -525,6 +529,30 @@ export async function extractAllAttachments(
       onProgress?.({ done: i + 1, total: work.length });
       continue;
     }
+
+    // Additional cross-folder OCR skip: if this message was previously OCR-ed
+    // under a different UID (e.g. after an IMAP MOVE to Archive assigned a new
+    // UID), the attachment_ocr_cache will have results keyed to the old UID.
+    // We detect this via message_id_header, which is stable across folder moves.
+    if (!options?.forceReOcr && item.messageIdHeader) {
+      const cachedTexts = await Promise.all(
+        item.indexable.map((att) =>
+          getOcrTextByMessageId(item.accountId, item.messageIdHeader!, att.index),
+        ),
+      );
+      if (cachedTexts.every((t) => t !== null)) {
+        // All attachments have cached OCR text — write it to the search index
+        // for the new UID so the message remains searchable, then stamp
+        // attachments_indexed_at so future runs skip sub-pass B immediately.
+        const combinedText = cachedTexts.filter(Boolean).join("\n").trim();
+        await upsertAttachmentText(
+          item.accountId, item.folderPath, item.uid, combinedText,
+        ).catch(() => {});
+        onProgress?.({ done: i + 1, total: work.length });
+        continue;
+      }
+    }
+
     const attachmentTexts: string[] = [];
     for (const att of item.indexable) {
       onProgress?.({
@@ -538,7 +566,7 @@ export async function extractAllAttachments(
         );
         const text = await extractAttachmentText(
           b64, att.contentType ?? "", att.filename,
-          { accountId: item.accountId, folderPath: item.folderPath, uid: item.uid, attachmentIndex: att.index } satisfies OcrCacheKey,
+          { accountId: item.accountId, uid: item.uid, attachmentIndex: att.index, messageIdHeader: item.messageIdHeader } satisfies OcrCacheKey,
           options?.forceReOcr,
         );
         console.log(`[extractAllAttachments] ${att.filename}: ${text?.length ?? 0} chars extracted`);
@@ -623,7 +651,45 @@ export async function indexNewArrivals(
           ct.startsWith("text/")
         );
       });
-      if (useUiStore.getState().autoOcr && indexableAtts.length > 0) {
+      // Look up message_id_header from DB (already upserted by upsertMessageSummary
+      // before indexNewArrivals runs) so we can check OCR cache cross-folder.
+      const messageIdHeader = await getMessageIdHeaderForUid(accountId, uid).catch(() => null);
+
+      // Check if all attachments are already OCR-cached (e.g. message moved
+      // from another folder with a new UID). If so, use cached text directly.
+      if (messageIdHeader && indexableAtts.length > 0) {
+        const cachedTexts = await Promise.all(
+          indexableAtts.map((att) =>
+            getOcrTextByMessageId(accountId, messageIdHeader, att.index),
+          ),
+        );
+        if (cachedTexts.every((t) => t !== null)) {
+          const combined = cachedTexts.filter(Boolean).join("\n").trim();
+          if (combined) attachmentTexts.push(combined);
+          // Skip OCR entirely — jump to upsertAttachmentText below.
+        } else if (useUiStore.getState().autoOcr && indexableAtts.length > 0) {
+          if (toastId === null) {
+            toastId = toast.push({ kind: "info", message: "Scanning attachments in new mail\u2026", durationMs: 0 });
+          }
+          for (const att of indexableAtts) {
+            const label = att.filename ?? "attachment";
+            toast.update(toastId, { message: `Scanning \u201c${label}\u201d\u2026` });
+            try {
+              const b64 = await loadAttachmentB64(accountId, folderPath, uid, att.index);
+              const attText = await extractAttachmentText(
+                b64, att.contentType ?? "", att.filename,
+                { accountId, uid, attachmentIndex: att.index, messageIdHeader } satisfies OcrCacheKey,
+              );
+              if (attText) {
+                attachmentTexts.push(attText);
+                indexedCount++;
+              }
+            } catch {
+              // Best-effort — skip attachment if fetch or extraction fails
+            }
+          }
+        }
+      } else if (useUiStore.getState().autoOcr && indexableAtts.length > 0) {
         if (toastId === null) {
           toastId = toast.push({ kind: "info", message: "Scanning attachments in new mail\u2026", durationMs: 0 });
         }
@@ -634,7 +700,7 @@ export async function indexNewArrivals(
             const b64 = await loadAttachmentB64(accountId, folderPath, uid, att.index);
             const attText = await extractAttachmentText(
               b64, att.contentType ?? "", att.filename,
-              { accountId, folderPath, uid, attachmentIndex: att.index } satisfies OcrCacheKey,
+              { accountId, uid, attachmentIndex: att.index, messageIdHeader } satisfies OcrCacheKey,
             );
             if (attText) {
               attachmentTexts.push(attText);

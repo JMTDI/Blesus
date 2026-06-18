@@ -1,5 +1,5 @@
 import { ipc } from "@/lib/ipc";
-import { getAccountSecrets, listAccounts, pruneSearchIndex, upsertSearchIndex } from "@/lib/db";
+import { getAccountSecrets, listAccounts, pruneSearchIndex, upsertSearchIndex, getOcrTextByMessageId, upsertAttachmentText, listMessagesForFolder, listFoldersForAccount } from "@/lib/db";
 
 export interface FullSyncProgress {
   foldersDone: number;
@@ -133,6 +133,35 @@ export async function indexAllMailForSearch(
       // Prune stale search_index entries for UIDs no longer in this folder
       // (e.g. messages that were moved or deleted since the last sync).
       await pruneSearchIndex(account.id, folder.path, indexedUids).catch(() => {});
+
+      // OCR backfill: for messages that were moved from another folder (new UID),
+      // their search_index row won't have attachment_text yet. Check OCR cache
+      // by message_id_header and write the text if available.
+      const dbMessages = await listMessagesForFolder(
+        (await listFoldersForAccount(account.id).catch(() => [])).find(
+          (f) => f.path === folder.path,
+        )?.id ?? -1,
+        PAGE_SIZE * 10,
+      ).catch(() => []);
+
+      for (const msg of dbMessages) {
+        if (!msg.message_id_header) continue;
+        if (!msg.attachments_json) continue;
+        // Check if search_index already has attachment_text for this UID
+        // by using the OCR cache lookup via message_id_header.
+        let atts: { index: number }[];
+        try { atts = JSON.parse(msg.attachments_json) as { index: number }[]; }
+        catch { continue; }
+        const texts = await Promise.all(
+          atts.map((att) =>
+            getOcrTextByMessageId(account.id, msg.message_id_header!, att.index),
+          ),
+        );
+        const combined = texts.filter(Boolean).join("\n").trim();
+        if (combined) {
+          await upsertAttachmentText(account.id, folder.path, msg.imap_uid, combined).catch(() => {});
+        }
+      }
 
       foldersDone++;
     }
