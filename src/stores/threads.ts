@@ -1653,10 +1653,42 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
     // reading pane (which caches cross-folder conversation siblings from Sent
     // / Inbox) doesn't keep showing stale messages from the deleted thread.
     useUiStore.getState().selectThread(null);
-    // Expunge all UIDs on server
-    await ipc.imapExpungeUids(config, folderPath, uids);
-    console.log(`[emptyTrash] expunge OK for ${uids.length} UIDs`);
-    toast.success(`Permanently deleted ${uids.length} message${uids.length === 1 ? "" : "s"}`);
+
+    // Run the IMAP expunge in the background — don't block the UI on a
+    // potentially slow server-side operation. Chunk UIDs so a huge trash
+    // doesn't produce a multi-megabyte IMAP command that some servers
+    // reject or hang on. Each chunk runs as a separate UID STORE + EXPUNGE
+    // in its own short-lived session.
+    const CHUNK_SIZE = 200;
+    const chunks: number[][] = [];
+    for (let i = 0; i < uids.length; i += CHUNK_SIZE) {
+      chunks.push(uids.slice(i, i + CHUNK_SIZE));
+    }
+    const total = uids.length;
+    toast.success(
+      `Deleting ${total} message${total === 1 ? "" : "s"} from trash\u2026`,
+    );
+    void (async () => {
+      let done = 0;
+      let failures = 0;
+      for (const chunk of chunks) {
+        try {
+          await ipc.imapExpungeUids(config, folderPath, chunk);
+          done += chunk.length;
+          console.log(`[emptyTrash] expunged chunk: ${done}/${total}`);
+        } catch (err) {
+          failures += chunk.length;
+          console.warn(`[emptyTrash] chunk failed (${chunk.length} UIDs):`, err);
+        }
+      }
+      if (failures === 0) {
+        toast.success(`Permanently deleted ${total} message${total === 1 ? "" : "s"}`);
+      } else if (done > 0) {
+        toast.error(`Deleted ${done} of ${total}; ${failures} failed`);
+      } else {
+        toast.error(`Failed to empty trash on server`);
+      }
+    })();
   },
 
   trashMessage: async (accountId, folderPath, uid) => {
