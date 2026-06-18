@@ -35,6 +35,16 @@ import { ruleMatches, type RuleAction, type RuleSpec } from "@/lib/rules";
  * server's stale \Unseen count while \Seen is still being confirmed.
  */
 export const markReadInFlight = new Set<number>();
+/** Tracks "folderId:uid" pairs that have a pending star toggle in flight,
+ *  mapped to the user's intended final state (true=starred, false=unstarred).
+ *  While a UID is in this map, background DB upserts AND IMAP-derived thread
+ *  rebuilds must use this intended state instead of the (possibly stale)
+ *  server-reported \Flagged flag. Without this, the IDLE-triggered refetch
+ *  re-stamps the old server value before the UID STORE has propagated. */
+export const starInFlight = new Map<string, boolean>();
+/** Tracks thread IDs currently being starred/unstarred. Prevents double-clicks
+ *  from firing a second IMAP call before the first has completed. */
+const starToggleInFlight = new Set<number>();
 import { useAccountsStore } from "@/stores/accounts";
 import { useUiStore } from "@/stores/ui";
 import { toast } from "@/stores/toasts";
@@ -435,11 +445,24 @@ function threadFromGroup(
   const allParticipants = members.flatMap((m) => [m.from, ...m.to]);
   const participants = dedupeAddresses(allParticipants).slice(0, 10);
 
+  // Apply pending star toggles to each member's flags so an IMAP refetch
+  // that still sees the old server-side \Flagged value doesn't bounce the
+  // star back. Without this, the IDLE-triggered Phase 2 of fetchFolder can
+  // re-derive isPinned from stale IMAP flags before the UID STORE propagates.
+  const adjustedMembers = members.map((m) => {
+    const intent = starInFlight.get(`${folderId}:${m.uid}`);
+    if (intent === undefined) return m;
+    const hasFlag = m.flags.includes("Flagged");
+    if (intent && !hasFlag) return { ...m, flags: [...m.flags, "Flagged"] };
+    if (!intent && hasFlag) return { ...m, flags: m.flags.filter((f) => f !== "Flagged") };
+    return m;
+  });
+
   // Thread is unread if ANY member is unread (Gmail/Spark behaviour).
-  const hasUnread = members.some((m) => !m.flags.includes("Seen"));
+  const hasUnread = adjustedMembers.some((m) => !m.flags.includes("Seen"));
   // Star rolls up the same way — any flagged member counts.
-  const isPinned = members.some((m) => m.flags.includes("Flagged"));
-  const hasAttachments = members.some((m) => m.hasAttachments);
+  const isPinned = adjustedMembers.some((m) => m.flags.includes("Flagged"));
+  const hasAttachments = adjustedMembers.some((m) => m.hasAttachments);
 
   return {
     id: newest.uid,
@@ -454,7 +477,7 @@ function threadFromGroup(
     hasAttachments,
     lastMessageAt: newest.date * 1000,
     category: inferCategoryFromFlags(newest.isBulk, newest.isAuto, newest.from),
-    messages: members.map((m) => ({
+    messages: adjustedMembers.map((m) => ({
       uid: m.uid,
       from: m.from,
       date: m.date,
@@ -531,10 +554,15 @@ function groupMessagesIntoThreads(
       } else {
         flags = flags.filter((f) => f !== "Seen");
       }
-      if (r.is_starred === 1) {
-        flags = flags.includes("Flagged") ? flags : [...flags, "Flagged"];
-      } else {
-        flags = flags.filter((f) => f !== "Flagged");
+      // If a star toggle is in flight for this UID, the DB row may not yet
+      // reflect the user's action — skip the DB override and let the raw IMAP
+      // flags (already correct after the UID STORE round-trip) drive isPinned.
+      if (!starInFlight.has(`${folderId}:${r.imap_uid}`)) {
+        if (r.is_starred === 1) {
+          flags = flags.includes("Flagged") ? flags : [...flags, "Flagged"];
+        } else {
+          flags = flags.filter((f) => f !== "Flagged");
+        }
       }
       return flags;
     })(),
@@ -871,7 +899,12 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
               receivedAt: s.date,
               flags: s.flags,
               isUnread: !s.flags.includes("Seen"),
-              isStarred: s.flags.includes("Flagged"),
+              // Don't overwrite is_starred if a toggleStar is in flight for this UID —
+              // the IDLE-triggered refetch may race the IMAP UID STORE and re-stamp
+              // the old server value before the flag change has propagated.
+              isStarred: starInFlight.has(`${folderId}:${s.uid}`)
+                ? undefined
+                : s.flags.includes("Flagged"),
               isImportant: false,
               hasAttachments: s.hasAttachments,
               isBulk: s.isBulk,
@@ -1098,7 +1131,9 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
                         receivedAt: s.date,
                         flags: s.flags,
                         isUnread: !s.flags.includes("Seen"),
-                        isStarred: s.flags.includes("Flagged"),
+                        isStarred: starInFlight.has(`${folderId}:${s.uid}`)
+                          ? undefined
+                          : s.flags.includes("Flagged"),
                         isImportant: false,
                         hasAttachments: s.hasAttachments,
                         isBulk: s.isBulk,
@@ -1234,7 +1269,9 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
             receivedAt: s.date,
             flags: s.flags,
             isUnread: !s.flags.includes("Seen"),
-            isStarred: s.flags.includes("Flagged"),
+            isStarred: starInFlight.has(`${folderId}:${s.uid}`)
+              ? undefined
+              : s.flags.includes("Flagged"),
             isImportant: false,
             hasAttachments: s.hasAttachments,
             isBulk: s.isBulk,
@@ -1325,7 +1362,9 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
               receivedAt: s.date,
               flags: s.flags,
               isUnread: !s.flags.includes("Seen"),
-              isStarred: s.flags.includes("Flagged"),
+              isStarred: starInFlight.has(`${folderId}:${s.uid}`)
+                ? undefined
+                : s.flags.includes("Flagged"),
               isImportant: false,
               hasAttachments: s.hasAttachments,
               isBulk: s.isBulk,
@@ -1942,10 +1981,30 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
   },
 
   toggleStar: async (id) => {
+    // Prevent double-clicks from firing a second IMAP call while the first is in progress.
+    if (starToggleInFlight.has(id)) return;
+    starToggleInFlight.add(id);
     const thread = get().threads.find((t) => t.id === id)
       ?? get().starredThreads.find((t) => t.id === id);
-    if (!thread) return;
+    if (!thread) { starToggleInFlight.delete(id); return; }
     const nextPinned = !thread.isPinned;
+
+    // Collect all real IMAP UIDs in this thread. When unstarring we only
+    // need to clear \Flagged on messages that actually have it; when starring
+    // we add it to every message so the thread reliably shows as starred after
+    // the next sync (where isPinned is derived from ANY member having Flagged).
+    const allUids = thread.messages.length > 0
+      ? thread.messages.map((m) => m.uid).filter((u) => u > 0)
+      : [thread.id];
+    const uidsToFlag = nextPinned
+      ? allUids
+      : allUids.filter((u) => {
+          const msg = thread.messages.find((m) => m.uid === u);
+          return msg ? msg.flags.includes("Flagged") : u === thread.id;
+        });
+    // Always include thread.id as a fallback so at least one UID is operated on.
+    if (uidsToFlag.length === 0) uidsToFlag.push(thread.id);
+
     set((state) => ({
       threads: state.threads.map((t) => (t.id === id ? { ...t, isPinned: nextPinned } : t)),
       // Keep starredThreads in sync: add when starring, remove when unstarring.
@@ -1957,18 +2016,36 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
               ))
         : state.starredThreads.filter((t) => t.id !== id),
     }));
+    // Guard all UIDs against background upserts overwriting is_starred while
+    // the IMAP UID STORE round-trip is in progress (IDLE can race us).
+    const inFlightKeys = allUids.map((u) => `${thread.folderId}:${u}`);
     if (thread.folderId > 0) {
-      void updateMessageFlags(thread.folderId, thread.id, { isStarred: nextPinned }).catch(() => {});
+      for (const key of inFlightKeys) starInFlight.set(key, nextPinned);
+    }
+    // Track DB write promises so we can wait for them to complete before
+    // clearing the in-flight guard — fire-and-forget writes can be queued
+    // behind slow FTS index updates and not land for many seconds.
+    const dbWritePromises: Promise<unknown>[] = [];
+    if (thread.folderId > 0) {
+      for (const uid of allUids) {
+        dbWritePromises.push(
+          updateMessageFlags(thread.folderId, uid, { isStarred: nextPinned }).catch(() => {}),
+        );
+      }
     }
     try {
       const { config, folderPath } = await sessionFor(thread);
-      await ipc.imapSetFlags(
+      await ipc.imapSetFlagsMulti(
         config,
         folderPath,
-        thread.id,
+        uidsToFlag,
         ["\\Flagged"],
         nextPinned ? "add" : "remove",
       );
+      // Wait for our DB writes to land BEFORE the finally block clears
+      // the in-flight guard, so subsequent fetchFolder upserts cannot
+      // race past our write with stale is_starred values.
+      await Promise.all(dbWritePromises);
     } catch (err) {
       // Revert on failure.
       set((state) => ({
@@ -1984,10 +2061,22 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
           : state.starredThreads.filter((t) => t.id !== id),
       }));
       if (thread.folderId > 0) {
-        void updateMessageFlags(thread.folderId, thread.id, { isStarred: !nextPinned }).catch(() => {});
+        for (const uid of allUids) {
+          void updateMessageFlags(thread.folderId, uid, { isStarred: !nextPinned }).catch(() => {});
+        }
       }
       console.error("toggleStar failed:", err);
       throw err;
+    } finally {
+      // Keep the starInFlight guard alive for a few extra seconds after the
+      // IMAP call completes. The SQLite DB can be slow (FTS index, WAL), so a
+      // background fetchFolder DB write may arrive well after the IMAP round-
+      // trip finishes and overwrite is_starred with the old server value.
+      // starToggleInFlight is cleared immediately so the user can click again.
+      starToggleInFlight.delete(id);
+      setTimeout(() => {
+        for (const key of inFlightKeys) starInFlight.delete(key);
+      }, 5000);
     }
   },
 
@@ -2681,8 +2770,11 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
 
   toggleStarMany: async (ids) => {
     const idSet = new Set(ids);
-    const targets = get().threads.filter((t) => idSet.has(t.id));
+    // Filter out any threads already being toggled individually.
+    const targets = get().threads.filter((t) => idSet.has(t.id) && !starToggleInFlight.has(t.id));
     if (targets.length === 0) return;
+    // Mark all targets as in-flight to prevent concurrent individual toggles.
+    for (const t of targets) starToggleInFlight.add(t.id);
     // If any are unstarred, star them all; otherwise unstar all. Matches
     // Gmail/Spark behaviour for the bulk "toggle" action.
     const anyUnstarred = targets.some((t) => !t.isPinned);
@@ -2692,19 +2784,64 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
         idSet.has(t.id) ? { ...t, isPinned: nextPinned } : t,
       ),
     }));
-    await runBulk(targets, async (thread) => {
-      const { config, folderPath } = await sessionFor(thread);
-      await ipc.imapSetFlags(
-        config,
-        folderPath,
-        thread.id,
-        ["\\Flagged"],
-        nextPinned ? "add" : "remove",
-      );
-      if (thread.folderId > 0) {
-        void updateMessageFlags(thread.folderId, thread.id, { isStarred: nextPinned }).catch(() => {});
-      }
+
+    // Pre-compute per-thread UID lists and register ALL in-flight keys upfront
+    // before runBulk starts. runBulk is concurrent (up to 3 at once), so the
+    // IDLE push from thread 1 completing can race the workers for threads 2+
+    // if we only add keys inside each individual worker.
+    const threadMeta = targets.map((thread) => {
+      const allUids = thread.messages.length > 0
+        ? thread.messages.map((m) => m.uid).filter((u) => u > 0)
+        : [thread.id];
+      const uidsToFlag = nextPinned
+        ? allUids
+        : allUids.filter((u) => {
+            const msg = thread.messages.find((m) => m.uid === u);
+            return msg ? msg.flags.includes("Flagged") : u === thread.id;
+          });
+      if (uidsToFlag.length === 0) uidsToFlag.push(thread.id);
+      return { thread, allUids, uidsToFlag };
     });
+
+    // Register all in-flight keys before any IMAP call fires.
+    const allInFlightKeys: string[] = [];
+    for (const { thread, allUids } of threadMeta) {
+      if (thread.folderId > 0) {
+        for (const uid of allUids) {
+          const key = `${thread.folderId}:${uid}`;
+          starInFlight.set(key, nextPinned);
+          allInFlightKeys.push(key);
+        }
+      }
+    }
+
+    try {
+      await runBulk(threadMeta, async ({ thread, allUids, uidsToFlag }) => {
+        const { config, folderPath } = await sessionFor(thread);
+        await ipc.imapSetFlagsMulti(
+          config,
+          folderPath,
+          uidsToFlag,
+          ["\\Flagged"],
+          nextPinned ? "add" : "remove",
+        );
+        if (thread.folderId > 0) {
+          // Wait for DB writes to land before this worker resolves.
+          await Promise.all(
+            allUids.map((uid) =>
+              updateMessageFlags(thread.folderId, uid, { isStarred: nextPinned }).catch(() => {}),
+            ),
+          );
+        }
+      });
+    } finally {
+      // Clear starToggleInFlight immediately so the user can click again,
+      // but delay starInFlight removal to cover slow DB write latency.
+      for (const t of targets) starToggleInFlight.delete(t.id);
+      setTimeout(() => {
+        for (const key of allInFlightKeys) starInFlight.delete(key);
+      }, 5000);
+    }
   },
 }));
 
@@ -2792,7 +2929,9 @@ export async function syncFolderToDb(
           receivedAt: s.date,
           flags: s.flags,
           isUnread: !s.flags.includes("Seen"),
-          isStarred: s.flags.includes("Flagged"),
+          isStarred: starInFlight.has(`${folderId}:${s.uid}`)
+            ? undefined
+            : s.flags.includes("Flagged"),
           isImportant: false,
           hasAttachments: s.hasAttachments,
           isBulk: s.isBulk,

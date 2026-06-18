@@ -21,6 +21,9 @@ export interface ComposerSnapshot {
   accountId: number;
   mode: ComposerMode;
   inReplyToThread: Thread | null;
+  /** The draft ID at the time of send, so undo-send can restore it and
+   *  prevent handleClose from creating a duplicate draft on exit. */
+  draftId: number | null;
 }
 
 interface ComposerState {
@@ -259,7 +262,9 @@ export const useComposerStore = create<ComposerState>((set, get) => ({
       prefillBodyHtml: snap.bodyHtml,
       prefillAttachments: snap.attachments,
       prefillRawBodyHtml: snap.rawBodyHtml ?? null,
-      prefillDraftId: null,
+      // Restore the original draftId so handleClose calls updateDraft()
+      // instead of insertDraft() — preventing a duplicate draft on exit.
+      prefillDraftId: snap.draftId,
     }),
 
   close: () => set({ open: false, prefillRawBodyHtml: null, prefillHideEditor: false, prefillDraftId: null }),

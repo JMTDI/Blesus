@@ -994,6 +994,9 @@ export function Composer() {
       accountId: selectedAccount.id,
       mode,
       inReplyToThread,
+      // Preserve the draft ID so undo-send can restore it and handleClose
+      // calls updateDraft() instead of insertDraft() (preventing a duplicate).
+      draftId,
     };
 
     const undoSec = useUiStore.getState().undoSendSeconds;

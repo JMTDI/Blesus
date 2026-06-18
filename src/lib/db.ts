@@ -1221,7 +1221,8 @@ export interface UpsertMessageInput {
   receivedAt: number | null;
   flags: string[];
   isUnread: boolean;
-  isStarred: boolean;
+  /** Omit to preserve the existing DB value (used when a toggleStar is in-flight). */
+  isStarred?: boolean;
   isImportant: boolean;
   hasAttachments: boolean;
   isBulk: boolean;
@@ -1264,7 +1265,7 @@ export async function upsertMessageSummary(input: UpsertMessageInput): Promise<v
        received_at = COALESCE(excluded.received_at, messages.received_at),
        flags = excluded.flags,
        is_unread = MIN(excluded.is_unread, messages.is_unread),
-       is_starred = excluded.is_starred,
+       is_starred = COALESCE(excluded.is_starred, messages.is_starred),
        is_important = excluded.is_important,
        has_attachments = MAX(excluded.has_attachments, messages.has_attachments),
        is_bulk = excluded.is_bulk,
@@ -1288,7 +1289,7 @@ export async function upsertMessageSummary(input: UpsertMessageInput): Promise<v
       input.receivedAt ?? Math.floor(Date.now() / 1000),
       JSON.stringify(input.flags),
       input.isUnread ? 1 : 0,
-      input.isStarred ? 1 : 0,
+      input.isStarred === undefined ? null : input.isStarred ? 1 : 0,
       input.isImportant ? 1 : 0,
       input.hasAttachments ? 1 : 0,
       input.isBulk ? 1 : 0,
