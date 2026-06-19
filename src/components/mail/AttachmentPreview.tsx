@@ -495,11 +495,11 @@ function AnnotationToolbar({
       <div className="w-px h-4 bg-soft shrink-0" />
       {/* Stroke width */}
       <div className="flex items-center gap-0.5">
-        {([2, 4, 7] as const).map((w) => (
+        {([0.5, 1, 2, 4, 7] as const).map((w) => (
           <button key={w} type="button" onClick={() => setStrokeWidth(w)} title={`Stroke ${w}px`}
             className={cn("flex items-center justify-center h-7 w-7 rounded-md transition-colors",
               strokeWidth === w ? "bg-hover ring-1 ring-inset ring-soft" : "hover:bg-hover")}>
-            <div className="rounded-full" style={{ width: w + 3, height: w + 3, background: color }} />
+            <div className="rounded-full" style={{ width: Math.max(w + 1, 2), height: Math.max(w + 1, 2), background: color }} />
           </button>
         ))}
       </div>
@@ -1007,7 +1007,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
   const [annMode, setAnnMode] = useState(false);
   const [annTool, setAnnTool] = useState<AnnotTool>("pen");
   const [annColor, setAnnColor] = useState("#000000");
-  const [annStrokeWidth, setAnnStrokeWidth] = useState(3);
+  const [annStrokeWidth, setAnnStrokeWidth] = useState(2);
   const [annFontSize, setAnnFontSize] = useState(18);
   const [annFontFamily, setAnnFontFamily] = useState("Arial");
   const [pdfAnnotations, setPdfAnnotations] = useState<Record<number, AnnotShape[]>>({});
@@ -2419,7 +2419,7 @@ export function ImageGalleryModal() {
   const [annMode, setAnnMode] = useState(false);
   const [annTool, setAnnTool] = useState<AnnotTool>("pen");
   const [annColor, setAnnColor] = useState("#000000");
-  const [annStrokeWidth, setAnnStrokeWidth] = useState(3);
+  const [annStrokeWidth, setAnnStrokeWidth] = useState(2);
   const [annFontSize, setAnnFontSize] = useState(18);
   const [annFontFamily, setAnnFontFamily] = useState("Arial");
   const [imgAnnotations, setImgAnnotations] = useState<Record<number, AnnotShape[]>>({});
