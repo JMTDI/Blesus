@@ -869,6 +869,37 @@ export async function getMessageIdHeaderForUid(
   return rows[0]?.message_id_header ?? null;
 }
 
+/**
+ * Look up attachment_text from any folder's search_index row for a message
+ * with the given message_id_header. Useful when a message has been moved
+ * between folders — the destination folder's row may not have attachment_text
+ * yet, but the source folder's row does. Returns the first non-empty match
+ * (typically there's only one since search_index has at most one row per
+ * account+folder+uid).
+ */
+export async function getAttachmentTextByMessageId(
+  accountId: number,
+  messageIdHeader: string,
+): Promise<string | null> {
+  const db = await getDb();
+  const rows = await db.select<{ attachment_text: string }[]>(
+    `SELECT si.attachment_text
+       FROM search_index si
+       JOIN messages m ON m.account_id = si.account_id
+                      AND m.imap_uid = si.imap_uid
+       JOIN folders f ON f.id = m.folder_id AND f.path = si.folder_path
+      WHERE si.account_id = $1
+        AND m.message_id_header = $2
+        AND si.attachment_text IS NOT NULL
+        AND length(si.attachment_text) > 0
+      LIMIT 1`,
+    [accountId, messageIdHeader],
+  ).catch(() => [] as { attachment_text: string }[]);
+  if (rows.length === 0) return null;
+  const text = rows[0]?.attachment_text ?? null;
+  return text && text.length > 0 ? text : null;
+}
+
 export async function getOcrTextByMessageId(
   accountId: number,
   messageIdHeader: string,

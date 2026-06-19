@@ -68,12 +68,18 @@ function b64ToUint8Array(b64: string): Uint8Array {
   return bytes;
 }
 
-async function extractPdfText(b64: string, cacheKey?: OcrCacheKey, forceOcr?: boolean): Promise<string> {
+async function extractPdfText(
+  b64: string,
+  cacheKey?: OcrCacheKey,
+  forceOcr?: boolean,
+  onProgress?: (pageNum: number, totalPages: number) => void,
+): Promise<string> {
   const data = b64ToUint8Array(b64);
   const pdf = await pdfjsLib.getDocument({ data }).promise;
   const parts: string[] = [];
 
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    onProgress?.(pageNum, pdf.numPages);
     const page = await pdf.getPage(pageNum);
     const textContent = await page.getTextContent();
     const pageText = textContent.items
@@ -188,6 +194,7 @@ export async function extractAttachmentText(
   filename: string | null,
   cacheKey?: OcrCacheKey,
   forceOcr?: boolean,
+  onProgress?: (pageNum: number, totalPages: number) => void,
 ): Promise<string | null> {
   if (b64.length > MAX_B64_LEN) return null;
 
@@ -211,7 +218,7 @@ export async function extractAttachmentText(
   try {
     let text: string;
     if (isPdf) {
-      text = await extractPdfText(b64, cacheKey, forceOcr);
+      text = await extractPdfText(b64, cacheKey, forceOcr, onProgress);
     } else if (isDocx) {
       text = await extractDocxText(b64);
     } else if (isXlsx) {

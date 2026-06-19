@@ -29,6 +29,7 @@ import {
 } from "@/components/mail/RowContextMenu";
 import { deleteDraft, listDrafts, searchMessages, type SearchHit, type StoredDraft } from "@/lib/db";
 import { indexAllMail } from "@/lib/indexAllMail";
+import { backfillAttachmentIndex } from "@/lib/fullSync";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useFullSyncStore } from "@/stores/fullSync";
 import { useComposerStore } from "@/stores/composer";
@@ -157,6 +158,9 @@ export function MessageList() {
       setSearchOffset(0);
       return;
     }
+    // Silently backfill any attachment text from OCR cache before searching
+    // (catches emails moved between folders that haven't been opened yet).
+    backfillAttachmentIndex().catch(() => {});
     let cancelled = false;
     setSearchLoading(true);
     setSearchOffset(0);

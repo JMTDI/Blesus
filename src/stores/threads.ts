@@ -2222,6 +2222,15 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
         }
       }
       toast.success(`Moved to ${displayPathName(destPath)}`);
+      // Silently fetch the destination folder so the new UID is upserted into
+      // the DB immediately — this ensures indexNewArrivals can OCR the moved
+      // attachment without waiting for the user to open that folder.
+      const destFolder = useAccountsStore.getState().folders.find(
+        (f) => f.accountId === thread.accountId && f.path === destPath,
+      );
+      if (destFolder) {
+        void get().fetchFolder(thread.accountId, destPath, destFolder.id, { rulesOnly: true }).catch(() => {});
+      }
     } catch (err) {
       restoreThreads(null, null, related);
       if (unreadDelta > 0) {
@@ -2274,6 +2283,13 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
         }
       }
       toast.success("Archived");
+      // Silently fetch destination so moved attachments get indexed immediately.
+      const archiveFolder = useAccountsStore.getState().folders.find(
+        (f) => f.accountId === thread.accountId && f.path === dest,
+      );
+      if (archiveFolder) {
+        void get().fetchFolder(thread.accountId, dest, archiveFolder.id, { rulesOnly: true }).catch(() => {});
+      }
     } catch (err) {
       restoreThreads(null, null, related);
       if (unreadDelta > 0) {
@@ -2421,6 +2437,13 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
         }),
       );
       toast.success("Moved to Trash");
+      // Silently fetch destination so moved attachments get indexed immediately.
+      const trashFolder = useAccountsStore.getState().folders.find(
+        (f) => f.accountId === thread.accountId && f.path === dest,
+      );
+      if (trashFolder) {
+        void get().fetchFolder(thread.accountId, dest, trashFolder.id, { rulesOnly: true }).catch(() => {});
+      }
     } catch (err) {
       restoreThread(set, get, thread);
       if (thread.hasUnread) {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Search as SearchIcon, Star } from "lucide-react";
 import { countSearchIndexed, searchMessages, type SearchHit } from "@/lib/db";
-import { indexAllMailForSearch, type FullSyncProgress } from "@/lib/fullSync";
+import { indexAllMailForSearch, backfillAttachmentIndex, type FullSyncProgress } from "@/lib/fullSync";
 import { useAccountsStore } from "@/stores/accounts";
 import { useThreadsStore } from "@/stores/threads";
 import { useUiStore } from "@/stores/ui";
@@ -36,6 +36,9 @@ export function SearchOverlay() {
     setTimeout(() => inputRef.current?.focus(), 20);
     // Load indexed count each time the overlay opens
     countSearchIndexed().then(setIndexedCount).catch(() => {});
+    // Silently backfill any attachment text from OCR cache (e.g. emails
+    // moved between folders) so search results are up-to-date immediately.
+    backfillAttachmentIndex().catch(() => {});
   }, [open, searchInitialQuery]);
 
   useEffect(() => {
