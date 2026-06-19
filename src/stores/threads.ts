@@ -20,7 +20,6 @@ import {
   parseNameEmail,
   getOcrTextByMessageId,
   upsertAttachmentText,
-  getSearchIndexBody,
   seedContact,
   updateMessageFlags,
   upsertMessageSummary,
@@ -949,18 +948,10 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
           void (async () => {
             try {
               const allUids = summaries.map((s) => s.uid);
-              const indexedUids = new Set<number>(
-                await Promise.all(
-                  allUids.map(async (uid) => {
-                    const row = await getSearchIndexBody(accountId, folderPath, uid).catch(() => null);
-                    return row?.attachments_indexed_at != null ? uid : -1;
-                  }),
-                ).then((arr) => arr.filter((u) => u > 0)),
-              );
-              const needsIndex = allUids.filter((u) => !indexedUids.has(u));
-              if (needsIndex.length > 0) {
-                await indexNewArrivals(accountId, folderPath, folderId, needsIndex);
-              }
+              // indexNewArrivals itself deduplicates per-UID via _indexingInProgress,
+              // so passing all UIDs is safe — already-in-flight ones are filtered out
+              // inside the function synchronously before any async work begins.
+              await indexNewArrivals(accountId, folderPath, folderId, allUids);
             } catch { /* best-effort */ }
           })();
         }
