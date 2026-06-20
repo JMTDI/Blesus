@@ -26,6 +26,7 @@ import {
   Unlink,
   Search as SearchIcon,
   MailPlus,
+  Copy,
 } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -809,6 +810,14 @@ function InlineExpandedMessage({
   const { primary: dateMain, secondary: dateSub } = formatDateStack(message.date * 1000);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  function copyAddress(raw: string, field: string) {
+    const m = raw.match(/<([^>]+)>/);
+    void navigator.clipboard.writeText(m?.[1] ?? raw);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 1500);
+  }
 
   const fullDate = message.date
     ? new Date(message.date * 1000).toLocaleString(undefined, {
@@ -831,22 +840,36 @@ function InlineExpandedMessage({
         <Avatar name={senderName} size={36} />
         <div className="flex-1 min-w-0">
           <p className="text-[13px] font-semibold text-primary">{senderName}</p>
-          <button
-            type="button"
-            onClick={() => setDetailsOpen((v) => !v)}
-            className="flex items-center gap-1 text-left group/details"
-            title={detailsOpen ? "Hide details" : "Show details"}
-          >
-            <span className="text-[11.5px] text-muted truncate max-w-[260px]">{message.from}</span>
-            <ChevronDown
-              size={12}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setDetailsOpen((v) => !v)}
+              className="flex items-center gap-1 text-left group/details min-w-0"
+              title={detailsOpen ? "Hide details" : "Show details"}
+            >
+              <span className="text-[11.5px] text-muted break-all">{message.from}</span>
+              <ChevronDown
+                size={12}
+                className={cn(
+                  "text-muted shrink-0 transition-transform duration-150",
+                  detailsOpen && "rotate-180",
+                )}
+              />
+              <FolderBadge accountId={activeAccountId} folderPath={message.folderPath} />
+            </button>
+            <button
+              type="button"
+              title={copiedField === "from" ? "Copied!" : "Copy sender address"}
+              aria-label="Copy sender address"
+              onClick={() => copyAddress(message.from, "from")}
               className={cn(
-                "text-muted shrink-0 transition-transform duration-150",
-                detailsOpen && "rotate-180",
+                "flex items-center justify-center h-5 rounded text-muted hover:text-primary hover:bg-hover transition-colors shrink-0 ml-0.5 px-1",
+                copiedField === "from" && "text-green-500 hover:text-green-500"
               )}
-            />
-            <FolderBadge accountId={activeAccountId} folderPath={message.folderPath} />
-          </button>
+            >
+              {copiedField === "from" ? <span className="text-[10px] font-medium">Copied!</span> : <Copy size={11} />}
+            </button>
+          </div>
         </div>
         <div className="relative flex items-center gap-2 shrink-0">
           <div className="text-right">
@@ -908,31 +931,36 @@ function InlineExpandedMessage({
               {message.to && (
                 <tr>
                   <td className="text-muted font-medium pr-3 py-0.5 whitespace-nowrap align-top">To</td>
-                  <td className="text-primary py-0.5">{message.to}</td>
+                  <td className="text-primary py-0.5 break-all">{message.to}</td>
+                  <td />
                 </tr>
               )}
               {message.cc && (
                 <tr>
                   <td className="text-muted font-medium pr-3 py-0.5 whitespace-nowrap align-top">Cc</td>
-                  <td className="text-primary py-0.5">{message.cc}</td>
+                  <td className="text-primary py-0.5 break-all">{message.cc}</td>
+                  <td />
                 </tr>
               )}
               {message.bcc && (
                 <tr>
                   <td className="text-muted font-medium pr-3 py-0.5 whitespace-nowrap align-top">Bcc</td>
-                  <td className="text-primary py-0.5">{message.bcc}</td>
+                  <td className="text-primary py-0.5 break-all">{message.bcc}</td>
+                  <td />
                 </tr>
               )}
               {message.subject && (
                 <tr>
                   <td className="text-muted font-medium pr-3 py-0.5 whitespace-nowrap align-top">Subject</td>
                   <td className="text-primary py-0.5">{message.subject}</td>
+                  <td />
                 </tr>
               )}
               {fullDate && (
                 <tr>
                   <td className="text-muted font-medium pr-3 py-0.5 whitespace-nowrap align-top">Date</td>
                   <td className="text-primary py-0.5 tabular-nums">{fullDate}</td>
+                  <td />
                 </tr>
               )}
             </tbody>
