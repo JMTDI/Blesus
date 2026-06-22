@@ -203,6 +203,7 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
               accountId: folder.accountId,
               folderPath: folder.path,
               imapUid: s.uid,
+              messageIdHeader: s.messageId || null,
               subject: s.subject,
               fromAddress: s.from ?? "",
               toAddresses: s.to.join(", "),
@@ -548,6 +549,7 @@ export async function extractAllAttachments(
         const combinedText = cachedTexts.filter(Boolean).join("\n").trim();
         await upsertAttachmentText(
           item.accountId, item.folderPath, item.uid, combinedText,
+          item.messageIdHeader,
         ).catch(() => {});
         onProgress?.({ done: i + 1, total: work.length });
         continue;
@@ -581,11 +583,13 @@ export async function extractAllAttachments(
     if (attachmentTexts.length > 0) {
       await upsertAttachmentText(
         item.accountId, item.folderPath, item.uid, attachmentTexts.join("\n\n"),
+        item.messageIdHeader,
       ).catch((e) => console.error(`[extractAllAttachments] upsertAttachmentText failed uid=${item.uid}:`, e));
     } else {
       // No attachment text extracted — stamp anyway so we don't re-OCR on next run.
       await upsertAttachmentText(
         item.accountId, item.folderPath, item.uid, "",
+        item.messageIdHeader,
       ).catch((e) => console.error(`[extractAllAttachments] upsertAttachmentText failed uid=${item.uid}:`, e));
     }
 
@@ -603,6 +607,12 @@ export async function extractAllAttachments(
  *  "Scanning…" toasts when two sync ticks fire before OCR has finished
  *  stamping attachments_indexed_at on the row. */
 const _indexingInProgress = new Set<string>();
+
+/** Keys of the form `"accountId:messageIdHeader"` for scans currently in
+ *  flight. Used to detect when a message is being scanned in one folder
+ *  while a moved copy lands in another — the destination waits for the
+ *  source scan to finish so it can hit the attachment_text_cache. */
+const _scanningByMsgId = new Map<string, Promise<void>>();
 
 export async function indexNewArrivals(
   accountId: number,
@@ -681,25 +691,39 @@ export async function indexNewArrivals(
             ct.startsWith("text/")
           );
         });
-        // Look up message_id_header from DB (already upserted by upsertMessageSummary
-        // before indexNewArrivals runs) so we can check OCR cache cross-folder.
-        const messageIdHeader = await getMessageIdHeaderForUid(accountId, uid).catch(() => null);
+        // Get message_id_header — use a folder-scoped DB lookup so we get the
+        // correct row. imap_uid is only unique per folder, not globally, so
+        // omitting folderPath from the lookup returns the wrong row after a MOVE.
+        // upsertMessageSummary runs before indexNewArrivals so the row exists.
+        const messageIdHeader = await getMessageIdHeaderForUid(accountId, uid, folderPath).catch(() => null);
 
-        // Check if all attachments are already OCR-cached (e.g. message moved
+        // Check if all attachments are already cached (e.g. message moved
         // from another folder with a new UID). If so, use cached text directly.
         let usedCached = false;
         if (messageIdHeader && indexableAtts.length > 0) {
-          // First try the search_index attachment_text from any folder — this
-          // covers BOTH text-based PDFs (extracted from PDF text layer) AND
-          // image-based PDFs (extracted via OCR cache). Works whenever the
-          // message was previously indexed in another folder.
-          const existingText = await getAttachmentTextByMessageId(accountId, messageIdHeader).catch(() => null);
+          // Check attachment_text_cache — keyed by message_id_header, never
+          // pruned on folder move, covers both text-layer and OCR PDFs.
+          // If this same message is currently being scanned in another folder
+          // (e.g. we moved it while its source-folder scan was in-flight),
+          // wait for that scan to finish first, then retry.
+          const msgIdKey = `${accountId}:${messageIdHeader}`;
+          const inflight = _scanningByMsgId.get(msgIdKey);
+          if (inflight) {
+            await inflight.catch(() => {});
+          }
+          let existingText = await getAttachmentTextByMessageId(accountId, messageIdHeader).catch(() => null);
+          // If still null, retry once after a short delay — the source folder's
+          // scan may have just written to attachment_text_cache milliseconds ago.
+          if (!existingText) {
+            await new Promise((r) => setTimeout(r, 1500));
+            existingText = await getAttachmentTextByMessageId(accountId, messageIdHeader).catch(() => null);
+          }
           if (existingText) {
             attachmentTexts.push(existingText);
             scannedCount += indexableAtts.length;
             usedCached = true;
           } else {
-            // Fall back to OCR cache (image-only PDFs cached by page).
+            // Fall back to OCR page cache (image-only PDFs cached by page).
             const cachedTexts = await Promise.all(
               indexableAtts.map((att) =>
                 getOcrTextByMessageId(accountId, messageIdHeader, att.index),
@@ -715,34 +739,51 @@ export async function indexNewArrivals(
             }
           }
         }
+        // Register this scan in _scanningByMsgId BEFORE OCR so any concurrent
+        // indexNewArrivals for the same message (destination UID after MOVE)
+        // waits for us to finish writing to attachment_text_cache.
+        // eslint-disable-next-line prefer-const
+        let resolveScan: (() => void) | undefined;
+        if (!usedCached && messageIdHeader && indexableAtts.length > 0) {
+          const msgIdKey = `${accountId}:${messageIdHeader}`;
+          // Wrap in a variable so TypeScript doesn't narrow it to `never`
+          const scanPromise = new Promise<void>((res) => { resolveScan = res as () => void; });
+          _scanningByMsgId.set(msgIdKey, scanPromise);
+        }
+
         if (!usedCached && useUiStore.getState().autoOcr && indexableAtts.length > 0) {
           if (toastId === null) {
             // Sticky — finally block always dismisses.
             toastId = toast.push({ kind: "info", message: "Scanning attachments in new mail\u2026", durationMs: 0 });
           }
-          for (const att of indexableAtts) {
-            const label = att.filename ?? "attachment";
-            toast.update(toastId, { message: `Scanning \u201c${label}\u201d\u2026` });
-            scannedCount++;
-            const tid = toastId; // capture for closure
-            try {
-              const b64 = await loadAttachmentB64(accountId, folderPath, uid, att.index);
-              const attText = await extractAttachmentText(
-                b64, att.contentType ?? "", att.filename,
-                { accountId, uid, attachmentIndex: att.index, messageIdHeader } satisfies OcrCacheKey,
-                false,
-                (pageNum, totalPages) => {
-                  toast.update(tid, { message: `Scanning \u201c${label}\u201d \u2014 page ${pageNum} / ${totalPages}` });
-                },
-              );
-              if (attText) {
-                attachmentTexts.push(attText);
-                indexedCount++;
+          try {
+            for (const att of indexableAtts) {
+              const label = att.filename ?? "attachment";
+              toast.update(toastId, { message: `Scanning \u201c${label}\u201d\u2026` });
+              scannedCount++;
+              const tid = toastId; // capture for closure
+              try {
+                const b64 = await loadAttachmentB64(accountId, folderPath, uid, att.index);
+                const attText = await extractAttachmentText(
+                  b64, att.contentType ?? "", att.filename,
+                  { accountId, uid, attachmentIndex: att.index, messageIdHeader } satisfies OcrCacheKey,
+                  false,
+                  (pageNum, totalPages) => {
+                    toast.update(tid, { message: `Scanning \u201c${label}\u201d \u2014 page ${pageNum} / ${totalPages}` });
+                  },
+                );
+                if (attText) {
+                  attachmentTexts.push(attText);
+                  indexedCount++;
+                }
+              } catch (e) {
+                console.warn(`[indexNewArrivals] skipped attachment "${label}":`, e);
+                // Best-effort — skip attachment if fetch or extraction fails
               }
-            } catch (e) {
-              console.warn(`[indexNewArrivals] skipped attachment "${label}":`, e);
-              // Best-effort — skip attachment if fetch or extraction fails
             }
+          } finally {
+            // Note: _scanningByMsgId is deleted and resolveScan() is called
+            // AFTER upsertAttachmentText below, so waiters get the cache hit.
           }
         }
 
@@ -753,10 +794,21 @@ export async function indexNewArrivals(
         // don't re-run OCR on already-processed UIDs (even when no text was
         // extracted — e.g. image-only PDFs with empty OCR, or messages with
         // no indexable attachments but body already fetched).
+        // Pass messageIdHeader so attachment_text_cache is written immediately
+        // without racing against upsertSearchIndex populating message_id_header.
         await upsertAttachmentText(
           accountId, folderPath, uid,
           attachmentTexts.length > 0 ? attachmentTexts.join("\n\n") : "",
+          messageIdHeader,
         ).catch(() => {});
+        // Signal any waiting destination-UID scans that attachment_text_cache
+        // has been written and they can now retry the cache lookup.
+        if (messageIdHeader) {
+          const k = `${accountId}:${messageIdHeader}`;
+          _scanningByMsgId.delete(k);
+        }
+        // Resolve the scan promise (if one was created) so waiting UIDs unblock.
+        if (resolveScan) resolveScan();
       } catch {
         // Best-effort — skip if this UID fails (already logged at lower level)
       }

@@ -90,6 +90,23 @@ async function extractPdfText(
     const meaningfulChars = pageText.replace(/\s+/g, "").length;
     if (!forceOcr && meaningfulChars >= OCR_THRESHOLD) {
       parts.push(pageText);
+      // Cache text-layer content in attachment_ocr_cache (same store as OCR
+      // results) so it is keyed by message_id_header and survives IMAP MOVE.
+      // Without this, text-based PDFs lose their extracted text when
+      // pruneSearchIndex removes the old folder's search_index row before
+      // indexNewArrivals stamps the new UID — causing an unnecessary rescan
+      // and a window where the message is absent from search results.
+      if (cacheKey && !forceOcr) {
+        const words: OcrWord[] = pageText
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((text) => ({ text, x: 0, y: 0, w: 0, h: 0 }));
+        setOcrCache(
+          cacheKey.accountId, cacheKey.uid,
+          cacheKey.attachmentIndex, pageNum, words,
+          cacheKey.messageIdHeader,
+        ).catch(() => {});
+      }
       continue;
     }
 

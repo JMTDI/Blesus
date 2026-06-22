@@ -762,6 +762,7 @@ export interface SearchIndexEntry {
   accountId: number;
   folderPath: string;
   imapUid: number;
+  messageIdHeader?: string | null;
   subject: string | null;
   fromAddress: string | null;
   toAddresses: string | null;
@@ -774,9 +775,11 @@ export async function upsertSearchIndex(e: SearchIndexEntry): Promise<void> {
   await db.execute(
     `INSERT INTO search_index (
        account_id, folder_path, imap_uid,
+       message_id_header,
        subject, from_address, to_addresses, snippet, received_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT(account_id, folder_path, imap_uid) DO UPDATE SET
+       message_id_header = COALESCE(excluded.message_id_header, search_index.message_id_header),
        subject = excluded.subject,
        from_address = excluded.from_address,
        to_addresses = excluded.to_addresses,
@@ -786,6 +789,7 @@ export async function upsertSearchIndex(e: SearchIndexEntry): Promise<void> {
       e.accountId,
       e.folderPath,
       e.imapUid,
+      e.messageIdHeader ?? null,
       e.subject,
       e.fromAddress,
       e.toAddresses,
@@ -793,6 +797,22 @@ export async function upsertSearchIndex(e: SearchIndexEntry): Promise<void> {
       e.receivedAt,
     ],
   );
+  // If this row already has attachment_text (e.g. was stamped by a prior scan)
+  // and we now have the message_id_header, backfill attachment_text_cache so
+  // future moves can find the cached text without rescanning. This handles the
+  // case where migration 29 couldn't backfill a row because message_id_header
+  // wasn't available at migration time.
+  if (e.messageIdHeader) {
+    await db.execute(
+      `INSERT INTO attachment_text_cache (account_id, message_id_header, attachment_text, updated_at)
+         SELECT $1, $2, attachment_text, unixepoch()
+           FROM search_index
+          WHERE account_id = $1 AND folder_path = $3 AND imap_uid = $4
+            AND attachment_text IS NOT NULL AND length(attachment_text) > 0
+       ON CONFLICT(account_id, message_id_header) DO NOTHING`,
+      [e.accountId, e.messageIdHeader, e.folderPath, e.imapUid],
+    ).catch(() => {});
+  }
 }
 
 export async function upsertSearchBody(
@@ -815,16 +835,62 @@ export async function upsertAttachmentText(
   folderPath: string,
   imapUid: number,
   attachmentText: string,
+  messageIdHeader?: string | null,
 ): Promise<void> {
   const db = await getDb();
-  await db.execute(
-    `INSERT INTO search_index (account_id, folder_path, imap_uid, attachment_text, attachments_indexed_at)
-        VALUES ($1, $2, $3, $4, unixepoch())
-        ON CONFLICT(account_id, folder_path, imap_uid) DO UPDATE SET
-          attachment_text = excluded.attachment_text,
-          attachments_indexed_at = unixepoch()`,
+  // First try to update an existing row (the common case — upsertSearchIndex
+  // always runs before upsertAttachmentText in fetchFolder). If no row exists
+  // yet (rare race where indexNewArrivals fires before upsertSearchIndex), fall
+  // back to an INSERT that includes a sentinel subject so the row is never
+  // returned as "unknown" — upsertSearchIndex will overwrite it shortly after.
+  const updated = await db.execute(
+    `UPDATE search_index
+        SET attachment_text = $4,
+            attachments_indexed_at = unixepoch()
+      WHERE account_id = $1 AND folder_path = $2 AND imap_uid = $3`,
     [accountId, folderPath, imapUid, attachmentText],
   );
+  if ((updated.rowsAffected ?? 0) === 0) {
+    // Row doesn't exist yet — insert a minimal placeholder. Do NOT set subject
+    // or from_address here; leave them null so they're filled by upsertSearchIndex.
+    await db.execute(
+      `INSERT OR IGNORE INTO search_index (account_id, folder_path, imap_uid, attachment_text, attachments_indexed_at)
+          VALUES ($1, $2, $3, $4, unixepoch())`,
+      [accountId, folderPath, imapUid, attachmentText],
+    );
+  }
+  // Also persist to attachment_text_cache keyed by message_id_header so the
+  // text survives IMAP MOVEs. pruneSearchIndex deletes search_index rows when
+  // a UID disappears from a folder, but attachment_text_cache is never pruned.
+  // getAttachmentTextByMessageId reads from this cache first, so moved messages
+  // are always found without rescanning.
+  //
+  // We use the caller-supplied messageIdHeader (preferred, avoids a DB round-
+  // trip and the race with upsertSearchIndex) or fall back to reading it from
+  // search_index if not provided.
+  if (attachmentText && attachmentText.length > 0) {
+    let msgId = messageIdHeader ?? null;
+    if (!msgId) {
+      const msgIdRows = await db.select<{ message_id_header: string }[]>(
+        `SELECT message_id_header FROM search_index
+          WHERE account_id = $1 AND folder_path = $2 AND imap_uid = $3
+            AND message_id_header IS NOT NULL
+          LIMIT 1`,
+        [accountId, folderPath, imapUid],
+      ).catch(() => [] as { message_id_header: string }[]);
+      msgId = msgIdRows[0]?.message_id_header ?? null;
+    }
+    if (msgId) {
+      await db.execute(
+        `INSERT INTO attachment_text_cache (account_id, message_id_header, attachment_text, updated_at)
+             VALUES ($1, $2, $3, unixepoch())
+             ON CONFLICT(account_id, message_id_header) DO UPDATE SET
+               attachment_text = excluded.attachment_text,
+               updated_at = unixepoch()`,
+        [accountId, msgId, attachmentText],
+      ).catch(() => {});
+    }
+  }
 }
 
 export async function deleteSearchIndexEntry(
@@ -860,12 +926,26 @@ export interface OcrWord {
 export async function getMessageIdHeaderForUid(
   accountId: number,
   imapUid: number,
+  folderPath?: string,
 ): Promise<string | null> {
   const db = await getDb();
-  const rows = await db.select<{ message_id_header: string | null }[]>(
-    `SELECT message_id_header FROM messages WHERE account_id = $1 AND imap_uid = $2 LIMIT 1`,
-    [accountId, imapUid],
-  );
+  // MUST include folder_path in the lookup — imap_uid is only unique within
+  // a folder, not globally. Without folder_path we get the message_id_header
+  // of whichever folder happens to have that UID number, which is wrong after
+  // any folder move and causes spurious cache misses.
+  const rows = folderPath
+    ? await db.select<{ message_id_header: string | null }[]>(
+        `SELECT m.message_id_header
+           FROM messages m
+           JOIN folders f ON f.id = m.folder_id
+          WHERE m.account_id = $1 AND f.path = $2 AND m.imap_uid = $3
+          LIMIT 1`,
+        [accountId, folderPath, imapUid],
+      )
+    : await db.select<{ message_id_header: string | null }[]>(
+        `SELECT message_id_header FROM messages WHERE account_id = $1 AND imap_uid = $2 LIMIT 1`,
+        [accountId, imapUid],
+      );
   return rows[0]?.message_id_header ?? null;
 }
 
@@ -882,21 +962,37 @@ export async function getAttachmentTextByMessageId(
   messageIdHeader: string,
 ): Promise<string | null> {
   const db = await getDb();
-  const rows = await db.select<{ attachment_text: string }[]>(
-    `SELECT si.attachment_text
-       FROM search_index si
-       JOIN messages m ON m.account_id = si.account_id
-                      AND m.imap_uid = si.imap_uid
-       JOIN folders f ON f.id = m.folder_id AND f.path = si.folder_path
-      WHERE si.account_id = $1
-        AND m.message_id_header = $2
-        AND si.attachment_text IS NOT NULL
-        AND length(si.attachment_text) > 0
+  // Read from the dedicated attachment_text_cache table (migration 29).
+  // This table is keyed by (account_id, message_id_header) and is never
+  // pruned when a message moves folders — unlike search_index rows which
+  // are deleted by pruneSearchIndex when a UID disappears from a folder.
+  // This guarantees moved messages always return their cached text even if
+  // the source folder's search_index row was pruned before indexNewArrivals
+  // stamps the destination folder's row.
+  const cacheRows = await db.select<{ attachment_text: string }[]>(
+    `SELECT attachment_text
+       FROM attachment_text_cache
+      WHERE account_id = $1
+        AND message_id_header = $2
       LIMIT 1`,
     [accountId, messageIdHeader],
   ).catch(() => [] as { attachment_text: string }[]);
-  if (rows.length === 0) return null;
-  const text = rows[0]?.attachment_text ?? null;
+  const cached = cacheRows[0]?.attachment_text ?? null;
+  if (cached && cached.length > 0) return cached;
+
+  // Fallback: check search_index directly (covers rows that were stamped
+  // before migration 29 ran and haven't been pruned yet).
+  const siRows = await db.select<{ attachment_text: string }[]>(
+    `SELECT attachment_text
+       FROM search_index
+      WHERE account_id = $1
+        AND message_id_header = $2
+        AND attachment_text IS NOT NULL
+        AND length(attachment_text) > 0
+      LIMIT 1`,
+    [accountId, messageIdHeader],
+  ).catch(() => [] as { attachment_text: string }[]);
+  const text = siRows[0]?.attachment_text ?? null;
   return text && text.length > 0 ? text : null;
 }
 
@@ -1100,10 +1196,10 @@ export async function searchMessages(
          si.account_id AS accountId,
          si.folder_path AS folderPath,
          si.imap_uid AS imapUid,
-         si.subject,
-         si.from_address AS fromAddress,
-         si.snippet,
-         si.received_at AS receivedAt,
+         COALESCE(si.subject, m.subject) AS subject,
+         COALESCE(si.from_address, m.from_address) AS fromAddress,
+         COALESCE(si.snippet, m.snippet) AS snippet,
+         COALESCE(si.received_at, m.received_at) AS receivedAt,
          bm25(search_fts) AS rank,
          COALESCE(m.is_starred, 0) AS isStarred
        FROM search_fts
@@ -1131,10 +1227,10 @@ export async function searchMessages(
          si.account_id AS accountId,
          si.folder_path AS folderPath,
          si.imap_uid AS imapUid,
-         si.subject,
-         si.from_address AS fromAddress,
-         si.snippet,
-         si.received_at AS receivedAt,
+         COALESCE(si.subject, m.subject) AS subject,
+         COALESCE(si.from_address, m.from_address) AS fromAddress,
+         COALESCE(si.snippet, m.snippet) AS snippet,
+         COALESCE(si.received_at, m.received_at) AS receivedAt,
          0.0 AS rank,
          COALESCE(m.is_starred, 0) AS isStarred
        FROM search_fts
@@ -1143,7 +1239,7 @@ export async function searchMessages(
        LEFT JOIN messages m ON m.account_id = si.account_id AND m.folder_id = f.id AND m.imap_uid = si.imap_uid
        WHERE search_fts MATCH $1
          ${exclusion}
-       ORDER BY si.received_at DESC
+       ORDER BY COALESCE(si.received_at, m.received_at) DESC
        LIMIT $2 OFFSET $3`,
       [escaped, dateLimit, dateOffset],
     );

@@ -108,6 +108,7 @@ export async function indexAllMailForSearch(
             accountId: account.id,
             folderPath: folder.path,
             imapUid: s.uid,
+            messageIdHeader: s.messageId || null,
             subject: s.subject,
             fromAddress: s.from,
             toAddresses: s.to.join(", "),
