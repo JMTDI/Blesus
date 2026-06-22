@@ -822,8 +822,7 @@ export async function indexNewArrivals(
       // Show success toast if we scanned anything — even if extractAttachmentText
       // returned empty (e.g. text-based PDFs where the body already has the text).
       if (scannedCount > 0) {
-        const noun = scannedCount === 1 ? "attachment" : "attachments";
-        toast.push({ kind: "success", message: `Scanned ${noun} in new mail` });
+        toast.push({ kind: "success", message: `Attachments Finished Scanning!` });
       }
     }
     for (const key of ownedKeys) _indexingInProgress.delete(key);
