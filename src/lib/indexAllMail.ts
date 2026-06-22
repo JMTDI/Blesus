@@ -749,9 +749,14 @@ export async function indexNewArrivals(
         if (textForIndex) {
           await upsertSearchBody(accountId, folderPath, uid, textForIndex).catch(() => {});
         }
-        if (attachmentTexts.length > 0) {
-          await upsertAttachmentText(accountId, folderPath, uid, attachmentTexts.join("\n\n")).catch(() => {});
-        }
+        // Always stamp attachments_indexed_at so subsequent fetchFolder ticks
+        // don't re-run OCR on already-processed UIDs (even when no text was
+        // extracted — e.g. image-only PDFs with empty OCR, or messages with
+        // no indexable attachments but body already fetched).
+        await upsertAttachmentText(
+          accountId, folderPath, uid,
+          attachmentTexts.length > 0 ? attachmentTexts.join("\n\n") : "",
+        ).catch(() => {});
       } catch {
         // Best-effort — skip if this UID fails (already logged at lower level)
       }
