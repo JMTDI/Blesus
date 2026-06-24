@@ -1082,15 +1082,27 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
     // which triggers Trusted Types errors for new Function() in print-preview.bundle.js)
     (async () => {
       const pageDataUrls: string[] = [];
+      // pageDims stores the TRUE page size in CSS pixels at 96dpi (scale=1 vp / 72 * 96)
+      // so that @page size rules match the actual paper dimensions, not the
+      // high-res canvas dimensions.
+      const pageDims: { w: number; h: number }[] = [];
 
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
+        // scale=1 gives dimensions in PDF points (1pt = 1/72in).
+        // Multiply by 96/72 to get CSS px at screen resolution.
+        const vp1 = page.getViewport({ scale: 1 });
+        pageDims.push({ w: vp1.width * (96 / 72), h: vp1.height * (96 / 72) });
         const vp = page.getViewport({ scale: PRINT_SCALE });
         const canvas = document.createElement("canvas"); // main doc, not iframe
         canvas.width = vp.width;
         canvas.height = vp.height;
         const ctx = canvas.getContext("2d");
-        if (!ctx) continue;
+        if (!ctx) {
+          // Push a placeholder so the array stays aligned with page numbers
+          pageDataUrls.push("");
+          continue;
+        }
 
         // annotationMode: 0 = DISABLE — prevents pdfjs from loading the
         // annotation editor layer (which pulls in print-preview.bundle.js)
@@ -1161,31 +1173,95 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
         }
       }
 
-      // Build a static print iframe — only <img> tags, no JS, no pdfjs.
-      // Use a Blob URL + load event so print() is only called after the
-      // browser has fully decoded all images (avoids blank print preview).
+      // Build a static print iframe. Don't set @page size — let the browser
+      // use the user's selected paper size and margins. Each page is a flex
+      // container filling exactly 100vw × 100vh of the printable area, with
+      // the image scaled to fit using object-fit:contain. This eliminates any
+      // possibility of overflow producing spurious blank pages, regardless of
+      // the user's margin choice in the print dialog.
+      const maxW = pageDims.reduce((m, d) => Math.max(m, d?.w ?? 0), 0) || 816;
+
       const imgTags = pageDataUrls
-        .map((url) => `<div class="page"><img src="${url}" /></div>`)
+        .map((url, idx) => {
+          if (!url) return "";
+          const breakBefore = idx === 0 ? "" : "break-before:page;page-break-before:always;";
+          return `<div class="page" style="${breakBefore}"><img src="${url}" /></div>`;
+        })
         .join("");
 
       const html = `<!DOCTYPE html><html><head><style>
+        @page { margin: 0; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { background: #fff; }
-        .page { page-break-after: always; display: flex; justify-content: center; }
-        .page:last-child { page-break-after: avoid; }
-        img { max-width: 100%; display: block; }
-        @page { margin: 0.5cm; }
+        html, body { background: #fff; }
+        .page {
+          width: 100vw;
+          height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          page-break-inside: avoid;
+          break-inside: avoid;
+        }
+        .page img {
+          max-width: 100%;
+          max-height: 100%;
+          width: auto;
+          height: auto;
+          object-fit: contain;
+          display: block;
+        }
       </style></head><body>${imgTags}</body></html>`;
 
       // Use srcdoc (same-origin, no blob: CSP issue) so the load event fires
       // reliably once all data-URL images are decoded before print() is called.
       const iframe = document.createElement("iframe");
-      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:0;height:0;border:0";
+      // Give the iframe a real width matching the widest page so image layout resolves correctly.
+      iframe.style.cssText = `position:fixed;top:-9999px;left:-9999px;width:${maxW}px;height:1px;border:0;visibility:hidden`;
       iframe.srcdoc = html;
 
+      const cleanup = () => {
+        setTimeout(() => {
+          if (document.body.contains(iframe)) document.body.removeChild(iframe);
+        }, 3000);
+      };
+
       iframe.addEventListener("load", () => {
-        iframe.contentWindow?.print();
-        setTimeout(() => { if (document.body.contains(iframe)) document.body.removeChild(iframe); }, 3000);
+        const printDoc = iframe.contentDocument;
+        const printWin = iframe.contentWindow;
+        if (!printDoc || !printWin) {
+          cleanup();
+          return;
+        }
+
+        const images = Array.from(printDoc.images);
+        const waitForImages = images.map((img) => {
+          if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+          return new Promise<void>((resolve) => {
+            const done = () => resolve();
+            img.addEventListener("load", done, { once: true });
+            img.addEventListener("error", done, { once: true });
+          });
+        });
+
+        void Promise.all(waitForImages)
+          .then(async () => {
+            try {
+              if ("fonts" in printDoc) {
+                await (printDoc as Document & { fonts?: FontFaceSet }).fonts?.ready;
+              }
+            } catch {
+              // ignore font readiness failures
+            }
+
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                printWin.focus();
+                printWin.print();
+              });
+            });
+          })
+          .finally(cleanup);
       }, { once: true });
 
       document.body.appendChild(iframe);
