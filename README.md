@@ -193,6 +193,32 @@ The release executable is at `src-tauri/target/release/Blesus.exe` (Windows)
 or `src-tauri/target/release/blesus` (Linux/macOS). Installers land under
 `src-tauri/target/release/bundle/`.
 
+### Rebuilding during development
+
+Use **only** `npm run tauri build` (or the convenience wrapper
+`npm run relaunch`) to produce a runnable binary. **Avoid running
+`cargo build` directly** — `cargo build` produces a *debug* binary at
+`src-tauri/target/debug/Blesus.exe` that:
+
+* is unoptimized (3× larger, noticeably slower);
+* uses its own SQLite database at `src-tauri/target/debug/blesus-files/blesus.db`,
+  separate from the release binary's database next to
+  `src-tauri/target/release/Blesus.exe`. Launching the debug binary therefore
+  looks like Blesus has "lost" your mail because it's reading a different
+  (often stale or empty) DB.
+
+The recommended dev iteration loop on Windows is:
+
+```powershell
+npm run relaunch              # kills any running Blesus, rebuilds frontend
+                              # + Tauri release binary, launches the new exe
+npm run relaunch:no-launch    # same, but stops before launching (useful
+                              # immediately before `git commit`)
+```
+
+The wrapper script lives at `scripts/rebuild-and-launch.ps1` and is also
+safe to invoke directly with `powershell -ExecutionPolicy Bypass -File ...`.
+
 ## Stack
 
 Tauri 2 · Rust (async-imap, lettre, mail-parser, keyring, sqlx) · React 19 ·

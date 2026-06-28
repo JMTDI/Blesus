@@ -15,7 +15,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "relaunch": "powershell -ExecutionPolicy Bypass -File scripts/rebuild-and-launch.ps1",
+    "relaunch:no-launch": "powershell -ExecutionPolicy Bypass -File scripts/rebuild-and-launch.ps1 -NoLaunch"
   },
   "dependencies": {
     "@tanstack/react-router": "^1.159.5",

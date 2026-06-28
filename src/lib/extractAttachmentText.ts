@@ -25,6 +25,27 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).href;
 
+/**
+ * URL that pdf.js uses to locate its native-code decoders.
+ *
+ * Without this set, image-only PDFs that embed JBig2- or JPEG2000-compressed
+ * bitmaps (common in scanned faxes, MFP scans and many marketing newsletters)
+ * fail to decode with:
+ *
+ *   JBig2CCITTFaxImage#instantiateWasm: Ensure that the `wasmUrl` API
+ *   parameter is provided.
+ *   Failed to resolve module specifier 'nulljbig2_nowasm_fallback.js'
+ *
+ * — which means pdf.js silently emits zero text content for the whole page,
+ * making the attachment unindexable for search.
+ *
+ * The four .wasm files plus their *_nowasm_fallback.js siblings live under
+ * `public/pdfjs-wasm/` (so Vite serves them at /pdfjs-wasm/). pdf.js
+ * concatenates this URL with the filename it needs, so a trailing slash is
+ * mandatory.
+ */
+const PDFJS_WASM_URL = "/pdfjs-wasm/";
+
 /** Characters per page below which we fall back to OCR */
 const OCR_THRESHOLD = 100;
 
@@ -75,7 +96,13 @@ async function extractPdfText(
   onProgress?: (pageNum: number, totalPages: number) => void,
 ): Promise<string> {
   const data = b64ToUint8Array(b64);
-  const pdf = await pdfjsLib.getDocument({ data }).promise;
+  // Pass `wasmUrl` so the worker can locate jbig2.wasm / openjpeg.wasm /
+  // qcms_bg.wasm / quickjs-eval.wasm. Without this, any page that uses
+  // JBig2 (faxes) or JPEG2000 image streams returns zero characters.
+  const pdf = await pdfjsLib.getDocument({
+    data,
+    wasmUrl: PDFJS_WASM_URL,
+  } as Parameters<typeof pdfjsLib.getDocument>[0]).promise;
   const parts: string[] = [];
 
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {

@@ -1,12 +1,41 @@
+use std::time::Duration;
+
 use async_imap::Session;
 use futures::StreamExt;
 use mail_parser::MessageParser;
 use native_tls::TlsConnector;
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 use tokio_native_tls::TlsStream;
 
 use super::types::{FlagMode, Folder, FolderStatus, ImapConfig, ImapSecurity, MessageBody, MessageSummary};
 use crate::error::{Error, Result};
+
+/// How long to wait for a TCP connection to the IMAP server to be established.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long to wait for an IMAP STATUS command (UNSEEN MESSAGES) to complete.
+/// Some servers (e.g. Fastmail) can be slow to respond to STATUS on large or
+/// rarely-accessed folders.  60 s gives more headroom while still preventing
+/// an indefinite hang.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long to wait for a paginated header fetch (UID FETCH … RFC822.HEADER)
+/// to complete.  Headers are small (~5 KB each), so 200 of them should arrive
+/// well within ~30 s even on a slow connection — but some IMAP servers
+/// (Fastmail's Sent Mail in particular) can take much longer when the folder
+/// has been recently churned or the connection is stale.  Bumped to 1000 s so
+/// a slow first batch on a very large folder doesn't abort the whole sync;
+/// combined with the retry-on-timeout in [`fetch_messages`], one transient
+/// stall gets a second chance with a fresh connection before failing.
+const HEADER_FETCH_TIMEOUT: Duration = Duration::from_secs(1000);
+
+/// How long to wait for a batch body-fetch (UID FETCH … BODY.PEEK[]) to
+/// complete.  50 bodies at ~50 KB each = ~2.5 MB; even at 1 Mbps that is
+/// ~20 s.  Bumped to 600 s to match the spirit of the header-fetch bump:
+/// generous headroom for one very large email or a slow server, while still
+/// preventing an indefinite hang.
+const BATCH_FETCH_TIMEOUT: Duration = Duration::from_secs(600);
 
 type TlsSession = Session<TlsStream<TcpStream>>;
 
@@ -50,6 +79,16 @@ pub async fn list_folders(config: &ImapConfig) -> Result<Vec<Folder>> {
 }
 
 pub async fn folder_status(config: &ImapConfig, folder: &str) -> Result<FolderStatus> {
+    timeout(STATUS_TIMEOUT, folder_status_inner(config, folder))
+        .await
+        .map_err(|_| Error::Imap(format!(
+            "folder status timed out after {}s (folder \"{}\")",
+            STATUS_TIMEOUT.as_secs(),
+            folder,
+        )))?
+}
+
+async fn folder_status_inner(config: &ImapConfig, folder: &str) -> Result<FolderStatus> {
     let mut session = connect(config).await?;
     let mbox = session
         .status(folder, "(UNSEEN MESSAGES)")
@@ -73,6 +112,18 @@ pub async fn folder_status_batch(
     if folders.is_empty() {
         return Ok(Vec::new());
     }
+    timeout(STATUS_TIMEOUT, folder_status_batch_inner(config, folders))
+        .await
+        .map_err(|_| Error::Imap(format!(
+            "folder status batch timed out after {}s",
+            STATUS_TIMEOUT.as_secs(),
+        )))?
+}
+
+async fn folder_status_batch_inner(
+    config: &ImapConfig,
+    folders: &[String],
+) -> Result<Vec<FolderStatus>> {
     let mut session = connect(config).await?;
     let mut results = Vec::with_capacity(folders.len());
     for folder in folders {
@@ -90,6 +141,54 @@ pub async fn folder_status_batch(
 }
 
 pub async fn fetch_messages(
+    config: &ImapConfig,
+    folder: &str,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<MessageSummary>> {
+    // First attempt — most calls succeed here.
+    let first = timeout(
+        HEADER_FETCH_TIMEOUT,
+        fetch_messages_inner(config, folder, limit, offset),
+    )
+    .await;
+
+    match first {
+        Ok(Ok(rows)) => return Ok(rows),
+        Ok(Err(e)) => {
+            // Inner returned an error (not a timeout).  Retry once with a
+            // fresh connection — many such errors are stale-session issues
+            // that disappear on reconnect (e.g. "BYE" from server, "session
+            // closed", broken pipe).
+            log::warn!(
+                "fetch_messages error on first attempt (folder \"{}\", offset {}): {} — retrying once",
+                folder, offset, e,
+            );
+        }
+        Err(_) => {
+            // Outer timeout fired.  Retry once with a fresh connection.
+            log::warn!(
+                "fetch_messages timed out after {}s on first attempt (folder \"{}\", offset {}) — retrying once",
+                HEADER_FETCH_TIMEOUT.as_secs(), folder, offset,
+            );
+        }
+    }
+
+    // Second (and final) attempt.
+    timeout(
+        HEADER_FETCH_TIMEOUT,
+        fetch_messages_inner(config, folder, limit, offset),
+    )
+    .await
+    .map_err(|_| Error::Imap(format!(
+        "header fetch timed out after {}s (folder \"{}\", offset {}) — retried once",
+        HEADER_FETCH_TIMEOUT.as_secs(),
+        folder,
+        offset,
+    )))?
+}
+
+async fn fetch_messages_inner(
     config: &ImapConfig,
     folder: &str,
     limit: u32,
@@ -433,6 +532,11 @@ pub async fn fetch_message_body(
 /// Messages the server does not return (unknown UID, expunged, etc.) are
 /// silently skipped — the caller can detect them by checking which UIDs
 /// are absent from the result.
+///
+/// The entire operation is wrapped in a [`BATCH_FETCH_TIMEOUT`] deadline so a
+/// server that stops sending mid-stream does not stall the bulk-download
+/// indefinitely.  On timeout the error is propagated and the caller counts
+/// the whole chunk as failed (to be retried on the next run).
 pub async fn fetch_message_bodies_batch(
     config: &ImapConfig,
     folder: &str,
@@ -442,6 +546,21 @@ pub async fn fetch_message_bodies_batch(
         return Ok(vec![]);
     }
 
+    timeout(BATCH_FETCH_TIMEOUT, fetch_message_bodies_batch_inner(config, folder, uids))
+        .await
+        .map_err(|_| Error::Imap(format!(
+            "batch body fetch timed out after {}s ({} UIDs in folder \"{}\")",
+            BATCH_FETCH_TIMEOUT.as_secs(),
+            uids.len(),
+            folder,
+        )))?
+}
+
+async fn fetch_message_bodies_batch_inner(
+    config: &ImapConfig,
+    folder: &str,
+    uids: &[u32],
+) -> Result<Vec<MessageBody>> {
     let mut session = connect(config).await?;
     session
         .select(folder)
@@ -752,13 +871,25 @@ pub(crate) async fn connect(config: &ImapConfig) -> Result<TlsSession> {
 }
 
 async fn connect_ssl(config: &ImapConfig) -> Result<TlsSession> {
-    let tcp = TcpStream::connect((config.host.as_str(), config.port)).await?;
+    let tcp = timeout(
+        CONNECT_TIMEOUT,
+        TcpStream::connect((config.host.as_str(), config.port)),
+    )
+    .await
+    .map_err(|_| Error::Imap(format!("connect timed out after {}s", CONNECT_TIMEOUT.as_secs())))?
+    .map_err(|e| Error::Imap(format!("connect: {e}")))?;
     let tls_stream = tls_handshake(&config.host, tcp).await?;
     finish_login(tls_stream, config).await
 }
 
 async fn connect_starttls(config: &ImapConfig) -> Result<TlsSession> {
-    let tcp = TcpStream::connect((config.host.as_str(), config.port)).await?;
+    let tcp = timeout(
+        CONNECT_TIMEOUT,
+        TcpStream::connect((config.host.as_str(), config.port)),
+    )
+    .await
+    .map_err(|_| Error::Imap(format!("connect timed out after {}s", CONNECT_TIMEOUT.as_secs())))?
+    .map_err(|e| Error::Imap(format!("connect: {e}")))?;
     let mut plain = async_imap::Client::new(tcp);
     plain
         .run_command_and_check_ok("STARTTLS", None)

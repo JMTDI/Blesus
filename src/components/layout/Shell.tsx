@@ -8,7 +8,6 @@ import { ResizeHandle } from "@/components/layout/ResizeHandle";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { Composer } from "@/components/composer/Composer";
 import { MoveToFolderPicker } from "@/components/mail/MoveToFolderPicker";
-import { SearchOverlay } from "@/components/mail/SearchOverlay";
 import { Toaster } from "@/components/ui/Toaster";
 import { useUiStore } from "@/stores/ui";
 import { useAccountsStore } from "@/stores/accounts";
@@ -236,7 +235,6 @@ export function Shell() {
       </div>
       <Composer />
       <MoveToFolderPicker />
-      <SearchOverlay />
       <PersistentMediaPlayer />
       <Suspense fallback={null}>
         <AttachmentPreviewModal />

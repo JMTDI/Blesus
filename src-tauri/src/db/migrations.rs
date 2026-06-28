@@ -164,5 +164,17 @@ pub fn all() -> Vec<Migration> {
             sql: include_str!("../../migrations/27_ocr_cache_message_id.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 28,
+            description: "add message_id_header column to search_index for cross-folder attachment lookups",
+            sql: include_str!("../../migrations/28_search_index_message_id.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 29,
+            description: "attachment_text_cache table (folder-independent OCR text)",
+            sql: include_str!("../../migrations/29_attachment_text_cache.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }

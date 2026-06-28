@@ -30,6 +30,7 @@ import {
   getSearchIndexBody,
   getMessageBody,
   listOrphanedBodyMessages,
+  backfillSearchIndexFromMessages,
   pruneSearchIndex,
   getOcrTextByMessageId,
   getAttachmentTextByMessageId,
@@ -93,11 +94,12 @@ function buildImapConfig(account: Awaited<ReturnType<typeof getAccount>>, passwo
 
 const HEADER_BATCH = 200; // message summaries per IMAP fetch round-trip
 // Fetch this many bodies per IMAP session (one login per chunk).
-// 200 messages × 1 login = ~75 logins for a 15 000-message mailbox.
+// 50 messages × 1 login = ~300 logins for a 15 000-message mailbox.
 // Fastmail allows 500 logins/10 min — this gives comfortable headroom.
-// Raising above ~500 risks server command-line length limits and high
-// peak RAM usage (all N bodies held in memory before being persisted).
-const BODY_BATCH_SIZE = 200;
+// Smaller batches mean progress fires every 50 messages and a stalled
+// server (e.g. very large email, network glitch) only blocks 50 messages
+// before the 10-minute BATCH_FETCH_TIMEOUT fires and moves on.
+const BODY_BATCH_SIZE = 50;
 
 // ---------- main entry ----------
 
@@ -130,41 +132,69 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
 
       const folder = realFolders[fi];
       if (!folder) continue;
+      console.log(`[indexAllMail] folder ${fi + 1}/${realFolders.length}: ${folder.path} — fetching account`);
       const account = await getAccount(folder.accountId);
-      if (!account) continue;
+      if (!account) { console.warn(`[indexAllMail] no account for folder ${folder.path}`); continue; }
+      console.log(`[indexAllMail] fetching secrets for account ${account.id}`);
       const secrets = await getAccountSecrets(folder.accountId);
+      console.log(`[indexAllMail] got secrets (password length: ${secrets.imapPassword.length}), calling imapFolderStatus`);
       const cfg = buildImapConfig(account, secrets.imapPassword);
 
       // Get total count from server
       let total = 0;
+      let statusOk = false;
       try {
         const status = await ipc.imapFolderStatus(cfg, folder.path);
+        console.log(`[indexAllMail] folder ${folder.path} total=${status.total}`);
         total = status.total ?? 0;
-      } catch {
+        statusOk = true;
+      } catch (e) {
+        console.error(`[indexAllMail] imapFolderStatus failed for ${folder.path}:`, e);
         update({ foldersDone: fi + 1 });
+        // DO NOT prune — status RPC failed; we have no idea what's really on
+        // the server. Leave existing search_index rows in place so a future
+        // successful reindex doesn't lose them. Phase 2 / body-repair will
+        // still operate on them via the messages table.
         continue;
       }
 
       if (total === 0) {
-        // Folder is empty on the server — any search_index entries that still
-        // exist for it are stale (messages were moved or deleted). Wipe them.
-        await pruneSearchIndex(folder.accountId, folder.path, []).catch(() => {});
+        // Server reports the folder is empty. We used to wipe all
+        // search_index entries here, but this turned out to be destructive
+        // for two reasons:
+        //  1) Some servers/folders transiently report 0 (e.g. Sent Mail
+        //     during STATUS race conditions, or when the IMAP session
+        //     hasn't fully selected the folder yet).
+        //  2) Even if the folder really is empty on the server, the local
+        //     `messages` table may still contain copies (e.g. drafts saved
+        //     locally, or messages downloaded before being remotely deleted)
+        //     and we still want those searchable.
+        // Skip pruning entirely and let the backfill keep rows alive.
+        console.log(`[indexAllMail] folder ${folder.path} reports 0 messages — skipping prune (preserving local rows)`);
         update({ foldersDone: fi + 1 });
         continue;
       }
 
       // Page through oldest-first (offset 0 = newest, so page backwards)
       let offset = 0;
+      let fetchError = false;
       const seenUids: number[] = [];
       while (offset < total) {
         if (cancelled()) { finish("cancelled"); return; }
 
-        const summaries = await ipc.imapFetchMessages(
-          cfg,
-          folder.path,
-          HEADER_BATCH,
-          offset,
-        ).catch(() => []);
+        let summaries: Awaited<ReturnType<typeof ipc.imapFetchMessages>> = [];
+        try {
+          summaries = await ipc.imapFetchMessages(
+            cfg,
+            folder.path,
+            HEADER_BATCH,
+            offset,
+          );
+        } catch (e) {
+          console.error(`[indexAllMail] imapFetchMessages failed for ${folder.path} offset=${offset}:`, e);
+          fetchError = true;
+          break; // bail out of pagination; do NOT prune below
+        }
 
         for (const s of summaries) seenUids.push(s.uid);
 
@@ -219,14 +249,37 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
 
       // Remove stale search_index entries for UIDs that no longer exist in
       // this folder (e.g. messages that were moved to another folder).
-      if (seenUids.length > 0) {
+      // ONLY prune when:
+      //   • no fetch error occurred (so seenUids is authoritative), AND
+      //   • status was successfully read, AND
+      //   • we actually walked the full folder (seenUids covers ≥ total).
+      // Otherwise we risk deleting rows for messages we simply didn't see.
+      const fullCoverage = statusOk && !fetchError && seenUids.length >= total;
+      if (fullCoverage && seenUids.length > 0) {
         await pruneSearchIndex(folder.accountId, folder.path, seenUids).catch(() => {});
+      } else if (!fullCoverage) {
+        console.warn(`[indexAllMail] folder ${folder.path}: incomplete coverage (statusOk=${statusOk}, fetchError=${fetchError}, seen=${seenUids.length}/${total}) — skipping prune`);
       }
 
       update({ foldersDone: fi + 1 });
     }
 
     if (cancelled()) { finish("cancelled"); return; }
+
+    // ── Backfill missing search_index rows ─────────────────────────────
+    // Some messages live in the local DB (sent-and-appended, manually fetched,
+    // opened-by-user, etc.) without a corresponding search_index row. Insert
+    // one for each such message using the metadata already on `messages`, so
+    // the subsequent body-repair pass can populate text_body for them.
+    // This is a fast SQL-only operation — no IMAP traffic.
+    if (!cancelled()) {
+      try {
+        const inserted = await backfillSearchIndexFromMessages();
+        console.log(`[indexAllMail] backfilled ${inserted} missing search_index rows from messages table`);
+      } catch (e) {
+        console.warn("[indexAllMail] search_index backfill failed:", e);
+      }
+    }
 
     // ── Phase 2: Bodies ─────────────────────────────────────────────────
     // Key insight: group unindexed messages by (accountId, folderPath) so we
@@ -247,7 +300,24 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
     for (const folder of realFolders) {
       if (cancelled()) break;
       const rows = await listMessagesForFolder(folder.id, 999_999).catch(() => []);
-      const unindexed = rows.filter((r) => r.body_fetched_at == null);
+      // A message needs a body fetch if any of:
+      //   • body_fetched_at IS NULL — never tried,
+      //   • body_fetched_at is set but BOTH text_body and html_body are null
+      //     or empty — an earlier fetch attempt completed but produced no
+      //     usable body (timed-out partial response, server returned empty,
+      //     pre-fix code that stamped body_fetched_at without saving the
+      //     body, etc.).
+      // The old `r.body_fetched_at == null` filter missed the second case,
+      // which is the typical state for messages that came in via the
+      // backfill / Phase-1 reprune cycle without ever having had a real
+      // body persisted.
+      const needsBody = (r: typeof rows[number]) => {
+        if (r.body_fetched_at == null) return true;
+        const t = r.text_body?.trim() ?? "";
+        const h = r.html_body?.trim() ?? "";
+        return t.length === 0 && h.length === 0;
+      };
+      const unindexed = rows.filter(needsBody);
       if (unindexed.length === 0) continue;
       const key = `${folder.accountId}::${folder.path}`;
       byFolder.set(key, {
@@ -257,6 +327,10 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
         uids: unindexed.map((r) => r.imap_uid),
       });
     }
+    // Log so we can see how many bodies the new exhaustive filter has queued
+    // for fetching across all folders this run.
+    const queuedBodies = [...byFolder.values()].reduce((s, f) => s + f.uids.length, 0);
+    console.log(`[indexAllMail] Phase 2: queued ${queuedBodies} message bodies for fetch (across ${byFolder.size} folders)`);
 
     if (cancelled()) { finish("cancelled"); return; }
 
@@ -377,10 +451,22 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
     }
 
     // ── Body-text repair pass ────────────────────────────────────────────
-    // Fill in search_index.text_body for any downloaded messages that have no
-    // body text indexed yet (e.g. downloaded before this indexing was added).
+    // Fill in search_index.text_body for any messages whose body is already
+    // downloaded (in the messages table) but whose search_index row has no
+    // text_body yet. This covers:
+    //   • messages saved by the per-message-open flow (which writes to
+    //     messages.text_body/html_body and may have skipped upsertSearchBody
+    //     before this fix),
+    //   • messages saved by the send/append flow,
+    //   • any si rows freshly created by backfillSearchIndexFromMessages
+    //     above (which leaves text_body null for the repair pass to fill),
+    //   • messages downloaded by an earlier version that didn't call
+    //     upsertSearchBody.
     if (!cancelled()) {
       const orphans = await listOrphanedBodyMessages().catch(() => []);
+      console.log(`[indexAllMail] body-repair: found ${orphans.length} downloaded messages with no indexed body text`);
+      let repaired = 0;
+      let skippedEmpty = 0;
       for (const row of orphans) {
         if (cancelled()) break;
         const bodyText = row.text_body && row.text_body.length > 0
@@ -388,10 +474,15 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
           : row.html_body
             ? htmlToText(row.html_body)
             : "";
-        if (bodyText) {
-          await upsertSearchBody(row.account_id, row.folder_path, row.imap_uid, bodyText).catch(() => {});
+        if (!bodyText) { skippedEmpty++; continue; }
+        try {
+          await upsertSearchBody(row.account_id, row.folder_path, row.imap_uid, bodyText);
+          repaired++;
+        } catch (e) {
+          console.warn(`[indexAllMail] body-repair upsert failed acct=${row.account_id} folder=${row.folder_path} uid=${row.imap_uid}:`, e);
         }
       }
+      console.log(`[indexAllMail] body-repair: repaired ${repaired}, skipped ${skippedEmpty} (empty after strip), total ${orphans.length}`);
     }
 
     // ── Phase 3: Attachment text extraction ─────────────────────────────

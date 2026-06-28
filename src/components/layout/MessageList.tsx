@@ -28,6 +28,7 @@ import {
   type ContextMenuState,
 } from "@/components/mail/RowContextMenu";
 import { deleteDraft, listDrafts, searchMessages, type SearchHit, type StoredDraft } from "@/lib/db";
+import { getOverallSyncStatus, type OverallSyncStatus } from "@/lib/syncStatus";
 import { indexAllMail } from "@/lib/indexAllMail";
 import { backfillAttachmentIndex } from "@/lib/fullSync";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -107,6 +108,32 @@ export function MessageList() {
   const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchLoadingMore, setSearchLoadingMore] = useState(false);
+
+  // ── Sync status indicator ──────────────────────────────────────────────
+  // Polls the local DB every ~5 s (and immediately when reindex transitions
+  // away from a running phase) so the user can see at a glance whether
+  // search is operating against the full mailbox or a partial cache.
+  const [syncStatus, setSyncStatus] = useState<OverallSyncStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      try {
+        const s = await getOverallSyncStatus();
+        if (!cancelled) setSyncStatus(s);
+      } catch {/* ignore — DB might be locked momentarily */}
+      if (!cancelled) {
+        // Poll faster while indexing is in progress so the numbers feel live.
+        const next = reindexing ? 2000 : 8000;
+        timer = window.setTimeout(refresh, next);
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [reindexing, reindexDone]);
   const [searchHasMore, setSearchHasMore] = useState(false);
   const [searchOffset, setSearchOffset] = useState(0);
   const SEARCH_PAGE = 50;
@@ -490,8 +517,11 @@ export function MessageList() {
       className="relative flex flex-col bg-raised border-r border-soft overflow-hidden"
       aria-label="Message list"
     >
-      <header className="flex items-center gap-4 pl-7 pr-4 pt-3 pb-2 shrink-0">
-        <div className="min-w-0 shrink-0">
+      <header className="flex items-center gap-2 pl-3 pr-3 pt-3 pb-2 shrink-0">
+        {/* Title block: allowed to shrink so a narrow message-list panel
+            doesn't starve the search box. Title truncates with an ellipsis
+            instead. */}
+        <div className="min-w-0 shrink">
           <h1 className="text-[16px] font-semibold text-primary truncate">
             {starredView ? "Starred" : activeFolder?.name ?? "Inbox"}
           </h1>
@@ -500,14 +530,62 @@ export function MessageList() {
               ? "Loading…"
               : `${scopedThreads.length} conversations${counts.all ? ` · ${counts.all} unread` : ""}`}
           </p>
+          {syncStatus && syncStatus.total_local > 0 && (() => {
+            const indexed = syncStatus.total_indexed;
+            const total = syncStatus.total_local;
+            const withBody = syncStatus.total_with_body;
+            const attachable = syncStatus.total_with_attachable;
+            const withAttText = syncStatus.total_with_attachment_text;
+            const pendingNoSi = syncStatus.pending_no_si;
+            const pendingBody = syncStatus.pending_index;
+            const indexedPct = Math.round((indexed / total) * 100);
+            const bodyPct = Math.round((withBody / total) * 100);
+            // attachment-coverage % only counts toward "ok" when there ARE
+            // some indexable attachments; otherwise the segment is hidden.
+            const attPct = attachable > 0 ? Math.round((withAttText / attachable) * 100) : 100;
+            // Color states:
+            //   green: ≥98% indexed AND ≥95% with body text AND ≥80% attachments
+            //   amber: ≥80% indexed
+            //   red:   <80% indexed (significant gap)
+            const ok = indexedPct >= 98 && bodyPct >= 95 && attPct >= 80;
+            const partial = !ok && indexedPct >= 80;
+            const dotClass = ok
+              ? "bg-emerald-500"
+              : partial
+                ? "bg-amber-500"
+                : "bg-rose-500";
+            const attachSegment = attachable > 0 ? ` · attach ${withAttText}/${attachable}` : "";
+            const label = ok
+              ? "Search index complete"
+              : `Search indexed: ${indexed}/${total} headers, ${withBody}/${total} bodies${attachable > 0 ? `, ${withAttText}/${attachable} attachments` : ""}${pendingNoSi > 0 ? ` · ${pendingNoSi} missing index` : ""}${pendingBody > 0 ? ` · ${pendingBody} bodies pending` : ""}`;
+            return (
+              <p
+                className="text-[10.5px] text-muted tabular-nums flex items-center gap-1.5 mt-0.5"
+                title={label + (ok ? "" : " · Click the database icon to reindex")}
+              >
+                <span className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0", dotClass)} />
+                <span className="truncate">
+                  {ok
+                    ? `Indexed ${indexed}/${total}${attachSegment}`
+                    : `Indexed ${indexed}/${total} · bodies ${withBody}/${total}${attachSegment}`}
+                </span>
+              </p>
+            );
+          })()}
         </div>
 
+        {/* Search box. A 140px minimum guarantees the icon + a few chars of
+            placeholder remain visible even when the message-list panel is
+            dragged very narrow. We also use the slightly stronger
+            `--bg-soft` background and `--border-strong` border so the box
+            stays visually distinct against `--bg-raised` instead of fading
+            into the header. */}
         <div
-          className="flex h-8 flex-1 min-w-0 max-w-xl items-center gap-2 rounded-full px-3 transition-colors"
+          className="flex h-8 flex-1 min-w-[140px] max-w-xl items-center gap-2 rounded-full px-3 transition-colors"
           style={{
-            background: "var(--bg-raised)",
+            background: "var(--bg-soft)",
             border: `1px solid ${
-              listQuery ? "var(--accent)" : "var(--border-soft)"
+              listQuery ? "var(--accent)" : "var(--border-strong, var(--border-soft))"
             }`,
           }}
           onClick={() => searchRef.current?.focus()}

@@ -115,7 +115,6 @@ export default function App() {
       const ui = useUiStore.getState();
       if (useComposerStore.getState().open) return;
       if (ui.settingsOpen) return;
-      if (ui.searchOpen) return;
 
       const { activeAccountId, activeFolderId, folders } = useAccountsStore.getState();
       if (!activeAccountId || !activeFolderId) return;

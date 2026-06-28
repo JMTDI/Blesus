@@ -73,7 +73,6 @@ export function Sidebar() {
   const openCompose = useComposerStore((s) => s.openCompose);
   const starredView = useUiStore((s) => s.starredView);
   const setStarredView = useUiStore((s) => s.setStarredView);
-  const closeSearch = useUiStore((s) => s.closeSearch);
   const setListQuery = useUiStore((s) => s.setListQuery);
 
   const renameFolder = useAccountsStore((s) => s.renameFolder);
@@ -336,7 +335,7 @@ export function Sidebar() {
               label="Starred"
               active={starredView}
               collapsed={sidebarCollapsed}
-              onClick={() => { closeSearch(); setListQuery(""); setStarredView(!starredView); }}
+              onClick={() => { setListQuery(""); setStarredView(!starredView); }}
             />
 
             {accountFolders.map((folder) => {
@@ -365,7 +364,6 @@ export function Sidebar() {
                   collapsed={sidebarCollapsed}
                   lockIcon={isLocked}
                   onClick={() => {
-                    closeSearch();
                     setListQuery("");
                     if (isLocked) {
                       setPendingNavFolderId(folder.id);

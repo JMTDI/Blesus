@@ -26,7 +26,13 @@ export function useKeyboardShortcuts(): void {
       }
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        useUiStore.getState().openSearch();
+        // The mailbox search lives in the titlebar above the message list.
+        // Ctrl+K just focuses it — no overlay.
+        const el = document.getElementById("blesus-titlebar-search") as HTMLInputElement | null;
+        if (el) {
+          el.focus();
+          el.select();
+        }
         return;
       }
 

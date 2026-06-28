@@ -822,11 +822,56 @@ export async function upsertSearchBody(
   textBody: string,
 ): Promise<void> {
   const db = await getDb();
-  await db.execute(
+  // Try UPDATE first (the common case — Phase 1 always upserts the si row
+  // before bodies are fetched). If no si row exists yet (e.g. the message was
+  // saved by the per-message-open flow or the send/append flow that bypass
+  // Phase 1), INSERT a minimal row so the body text becomes searchable.
+  // Subject/from/to are filled later by upsertSearchIndex / the next reindex
+  // backfill — meanwhile FTS can still match against text_body.
+  const updated = await db.execute(
     `UPDATE search_index SET text_body = $4
       WHERE account_id = $1 AND folder_path = $2 AND imap_uid = $3`,
     [accountId, folderPath, imapUid, textBody],
   );
+  if ((updated.rowsAffected ?? 0) === 0) {
+    // No si row — seed one from the messages table (preferred so subject/from
+    // are populated immediately), or fall back to a minimal row if no messages
+    // row exists either.
+    const m = await db.select<{
+      subject: string | null;
+      from_address: string | null;
+      to_addresses: string | null;
+      snippet: string | null;
+      received_at: number | null;
+    }[]>(
+      `SELECT m.subject, m.from_address, m.to_addresses, m.snippet,
+              m.received_at
+         FROM messages m
+         JOIN folders f ON f.id = m.folder_id
+        WHERE m.account_id = $1 AND f.path = $2 AND m.imap_uid = $3
+        LIMIT 1`,
+      [accountId, folderPath, imapUid],
+    ).catch(() => [] as never[]);
+    const meta = m[0];
+    // Omit message_id_header — it's an optional migration-28 column and
+    // including it would make this insert fail if the migration didn't run.
+    await db.execute(
+      `INSERT OR IGNORE INTO search_index (
+         account_id, folder_path, imap_uid,
+         subject, from_address, to_addresses, snippet,
+         text_body, received_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        accountId, folderPath, imapUid,
+        meta?.subject ?? null,
+        meta?.from_address ?? null,
+        meta?.to_addresses ?? null,
+        meta?.snippet ?? null,
+        textBody,
+        meta?.received_at ?? null,
+      ],
+    ).catch(() => {});
+  }
 }
 
 /** Write extracted attachment/OCR text and stamp the row so Phase 3 skips it on subsequent reindexes. */
@@ -1087,19 +1132,90 @@ export interface OrphanedBodyRow {
  */
 export async function listOrphanedBodyMessages(): Promise<OrphanedBodyRow[]> {
   const db = await getDb();
+  // LEFT JOIN so we catch messages that have a downloaded body but NO
+  // search_index row at all (e.g. messages saved by the per-message open
+  // flow or the send/append flow that don't run through Phase 1). These
+  // are repaired by upsertSearchBody which will create the si row if
+  // backfillSearchIndexFromMessages was called first (it always is, by
+  // indexAllMail at the start of Phase 2).
   return db.select<OrphanedBodyRow[]>(
     `SELECT f.account_id, f.path AS folder_path, m.imap_uid,
             m.text_body, m.html_body
        FROM messages m
        JOIN folders f ON f.id = m.folder_id
-       JOIN search_index si
+       LEFT JOIN search_index si
          ON si.account_id = f.account_id
         AND si.folder_path = f.path
         AND si.imap_uid = m.imap_uid
       WHERE m.body_fetched_at IS NOT NULL
-        AND (si.text_body IS NULL OR si.text_body = '')
+        AND (si.id IS NULL OR si.text_body IS NULL OR si.text_body = '')
         AND (m.text_body IS NOT NULL OR m.html_body IS NOT NULL)`,
   );
+}
+
+/**
+ * Backfill `search_index` with one row per `messages` row that doesn't yet
+ * have one. Uses subject / from / to / snippet / received_at already on the
+ * `messages` table, so it's a fast SQL-only operation — no IMAP traffic.
+ *
+ * Returns the number of rows inserted, so callers can log the result.
+ *
+ * Idempotent — safe to run on every reindex. Existing search_index rows are
+ * left untouched (the `WHERE NOT EXISTS` guard skips them).
+ *
+ * This is the safety net that guarantees every reindex produces a complete
+ * search index: no matter how a message got into the local DB (header sync,
+ * body download, send-and-append, manual fetch, etc.), it will have a
+ * search_index row after the next reindex.
+ */
+export async function backfillSearchIndexFromMessages(): Promise<number> {
+  const db = await getDb();
+  // Count first so we can return the number actually inserted.
+  const before = await db.select<{ n: number }[]>(
+    `SELECT COUNT(*) AS n FROM search_index`,
+  );
+  const beforeN = before[0]?.n ?? 0;
+
+  // Use INSERT OR IGNORE so a stray UNIQUE-constraint conflict on a single
+  // row (e.g. legacy duplicate-UID placeholders) doesn't abort the entire
+  // backfill. Also explicitly require imap_uid > 0 — local drafts and other
+  // placeholder rows use UID=0 and would silently collide on UNIQUE.
+  //
+  // We deliberately do NOT insert message_id_header here. It's an optional
+  // column added by migration 28 and not required for FTS body/header search
+  // to function. Including it would make this whole backfill fail if the
+  // migration somehow didn't apply (which happened in older builds), losing
+  // the entire fix's effect. The column gets populated later by
+  // upsertSearchIndex during normal sync, and migration 28's own UPDATE.
+  await db.execute(
+    `INSERT OR IGNORE INTO search_index (
+       account_id, folder_path, imap_uid,
+       subject, from_address, to_addresses, snippet, received_at
+     )
+     SELECT m.account_id,
+            f.path,
+            m.imap_uid,
+            m.subject,
+            m.from_address,
+            m.to_addresses,
+            m.snippet,
+            m.received_at
+       FROM messages m
+       JOIN folders f ON f.id = m.folder_id
+       LEFT JOIN search_index si
+         ON si.account_id = m.account_id
+        AND si.folder_path = f.path
+        AND si.imap_uid = m.imap_uid
+      WHERE si.id IS NULL
+        AND m.imap_uid IS NOT NULL
+        AND m.imap_uid > 0`,
+  );
+
+  const after = await db.select<{ n: number }[]>(
+    `SELECT COUNT(*) AS n FROM search_index`,
+  );
+  const afterN = after[0]?.n ?? 0;
+  return Math.max(0, afterN - beforeN);
 }
 
 /**
@@ -1742,6 +1858,32 @@ export async function purgeDeletedMessages(
   );
   const serverSet = new Set(serverUids);
   const toDelete = rows.map((r) => r.imap_uid).filter((u) => !serverSet.has(u));
+
+  // ── Safety guard against partial/empty serverUids ─────────────────────
+  // imapFetchAllUids can resolve with a partial list when the IMAP session
+  // times out mid-listing (e.g. on slow Sent Mail folders) or with an empty
+  // list when the SELECT succeeds but the SEARCH fails. Either case would
+  // cause us to mass-delete thousands of valid local rows. Refuse to purge
+  // more than 10% of the folder's contents in a single call — anything
+  // beyond that almost certainly indicates a partial server response, not
+  // a real bulk expunge.
+  //
+  // The threshold (10%, with an absolute floor of 5) is chosen to still
+  // allow real expunges of small folders / a few-dozen deletes from a big
+  // folder, while protecting against the catastrophic case where serverUids
+  // is mostly missing.
+  const total = rows.length;
+  const maxAllowed = Math.max(5, Math.ceil(total * 0.1));
+  if (total > 0 && toDelete.length > maxAllowed) {
+    console.warn(
+      `[purgeDeletedMessages] REFUSING to delete ${toDelete.length} of ${total} ` +
+      `messages in folder "${folderPath}" (limit: ${maxAllowed}). This usually ` +
+      `means imapFetchAllUids returned a partial list (server timeout/error). ` +
+      `Skipping purge to prevent data loss.`,
+    );
+    return 0;
+  }
+
   for (const uid of toDelete) {
     await db.execute(
       `DELETE FROM messages WHERE folder_id = $1 AND imap_uid = $2`,

@@ -64,8 +64,6 @@ interface UiState {
   /** "HH:MM", local time. Exclusive at end. Window may wrap past midnight. */
   quietHoursEnd: string;
   autoOcr: boolean;
-  searchOpen: boolean;
-  searchInitialQuery: string;
   /** Thread id awaiting a destination via the move-to-folder picker. Null
    *  when the picker is closed. */
   moveTargetThreadId: number | null;
@@ -116,8 +114,6 @@ interface UiState {
   setQuietHoursStart: (hhmm: string) => void;
   setQuietHoursEnd: (hhmm: string) => void;
   setAutoOcr: (on: boolean) => void;
-  openSearch: (initialQuery?: string) => void;
-  closeSearch: () => void;
   openMove: (threadId: number) => void;
   closeMove: () => void;
   setListFilter: (f: ListFilter) => void;
@@ -177,8 +173,6 @@ export const useUiStore = create<UiState>((set) => ({
   quietHoursStart: "22:00",
   quietHoursEnd: "08:00",
   autoOcr: true,
-  searchOpen: false,
-  searchInitialQuery: "",
   moveTargetThreadId: null,
   listFilter: "all",
   listSort: "newest",
@@ -343,8 +337,6 @@ export const useUiStore = create<UiState>((set) => ({
     persist(KEY_AUTO_OCR, on ? "1" : "0");
     set({ autoOcr: on });
   },
-  openSearch: (initialQuery) => set({ searchOpen: true, searchInitialQuery: initialQuery ?? "" }),
-  closeSearch: () => set({ searchOpen: false, searchInitialQuery: "" }),
   openMove: (threadId) => set({ moveTargetThreadId: threadId }),
   closeMove: () => set({ moveTargetThreadId: null }),
   setListFilter: (f) => set({ listFilter: f }),
