@@ -571,7 +571,7 @@ export function Composer() {
       content: "<p></p>",
       editorProps: {
         attributes: {
-          class: "blesus-editor outline-none min-h-[220px] px-4 py-3 text-[13px] leading-relaxed",
+          class: "blesus-editor outline-none min-h-[220px] px-4 py-3 text-[13px] leading-normal",
         },
       },
       onTransaction: ({ editor: e }) => {
@@ -1455,7 +1455,7 @@ export function Composer() {
 
       <style>{`
         .blesus-editor { font-family: Arial, sans-serif; }
-        .blesus-editor p { margin: 0 0 0.6em 0; }
+        .blesus-editor p { margin: 0; }
         .blesus-editor blockquote {
           border-left: 3px solid var(--border-strong);
           margin: 0.6em 0;
