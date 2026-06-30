@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import { Download, ImageOff } from "lucide-react";
+import { Copy, Download, ExternalLink, ImageOff } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useComposerStore } from "@/stores/composer";
 import { flog } from "@/lib/logger";
@@ -285,6 +285,12 @@ function stripQuotedHtml(html: string): { main: string; hasQuotes: boolean } {
   return { main: body.innerHTML.trim(), hasQuotes: removed };
 }
 
+interface CtxLink {
+  href: string;
+  x: number;
+  y: number;
+}
+
 interface CtxImage {
   src: string;
   x: number;
@@ -338,6 +344,7 @@ export function HtmlViewer({ html, uid }: Props) {
   const [hoveredHref, setHoveredHref] = useState<string | null>(null);
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
   const [ctxImage, setCtxImage] = useState<CtxImage | null>(null);
+  const [ctxLink, setCtxLink] = useState<CtxLink | null>(null);
 
   // Reset "show full" when a different message is opened
   useEffect(() => { setShowFull(false); }, [uid]);
@@ -349,6 +356,14 @@ export function HtmlViewer({ html, uid }: Props) {
     window.addEventListener("mousedown", dismiss, { once: true });
     return () => window.removeEventListener("mousedown", dismiss);
   }, [ctxImage]);
+
+  // Dismiss link context menu on outside click
+  useEffect(() => {
+    if (!ctxLink) return;
+    const dismiss = () => setCtxLink(null);
+    window.addEventListener("mousedown", dismiss, { once: true });
+    return () => window.removeEventListener("mousedown", dismiss);
+  }, [ctxLink]);
 
   const allowed =
     remoteImages === "always" || allowedImageUids.includes(uid);
@@ -535,7 +550,7 @@ export function HtmlViewer({ html, uid }: Props) {
 
     // Intercept the native WebView2 context menu. When text is selected,
     // let the native menu through so the user can copy. On images, show our
-    // own safe save menu. Suppress the menu in all other cases.
+    // own safe save menu. On links, show a copy-link menu. Suppress otherwise.
     const onContextMenu = (e: Event) => {
       const me = e as MouseEvent;
 
@@ -544,14 +559,30 @@ export function HtmlViewer({ html, uid }: Props) {
       if (sel && sel.toString().trim().length > 0) return;
 
       e.preventDefault();
-      let node: Element | null = me.target as Element;
-      while (node && node.tagName !== "IMG") node = node.parentElement;
-      if (node) {
-        const img = node as HTMLImageElement;
+      const rect = iframe.getBoundingClientRect();
+      const x = rect.left + me.clientX;
+      const y = rect.top + me.clientY;
+
+      // Check for image
+      let imgNode: Element | null = me.target as Element;
+      while (imgNode && imgNode.tagName !== "IMG") imgNode = imgNode.parentElement;
+      if (imgNode) {
+        const img = imgNode as HTMLImageElement;
         const src = img.getAttribute("src") ?? img.src ?? "";
         if (src && !src.startsWith("blob:")) {
-          const rect = iframe.getBoundingClientRect();
-          setCtxImage({ src, x: rect.left + me.clientX, y: rect.top + me.clientY });
+          setCtxImage({ src, x, y });
+          return;
+        }
+      }
+
+      // Check for link
+      let linkNode: Element | null = me.target as Element;
+      while (linkNode && linkNode.tagName !== "A") linkNode = linkNode.parentElement;
+      if (linkNode) {
+        const href = (linkNode as HTMLAnchorElement).getAttribute("href") ?? "";
+        if (href) {
+          setCtxLink({ href, x, y });
+          return;
         }
       }
     };
@@ -623,6 +654,49 @@ export function HtmlViewer({ html, uid }: Props) {
             >
               <Download size={13} className="shrink-0 opacity-70" />
               Save image
+            </button>
+          </div>
+        )}
+        {ctxLink && (
+          <div
+            className="fixed z-50 rounded shadow-lg overflow-hidden"
+            style={{
+              left: ctxLink.x,
+              top: ctxLink.y,
+              background: "var(--bg-raised)",
+              border: "1px solid var(--border-soft)",
+              boxShadow: "0 4px 16px rgba(0,0,0,0.22)",
+              minWidth: 180,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="flex items-center gap-2.5 w-full px-3.5 py-2 text-[13px] text-left hover:bg-[var(--bg-hover)] transition-colors"
+              style={{ color: "var(--fg-primary)" }}
+              onClick={() => {
+                setCtxLink(null);
+                navigator.clipboard.writeText(ctxLink.href).catch(() => {});
+              }}
+            >
+              <Copy size={13} className="shrink-0 opacity-70" />
+              Copy link
+            </button>
+            <button
+              type="button"
+              className="flex items-center gap-2.5 w-full px-3.5 py-2 text-[13px] text-left hover:bg-[var(--bg-hover)] transition-colors"
+              style={{ color: "var(--fg-primary)" }}
+              onClick={() => {
+                setCtxLink(null);
+                const href = ctxLink.href;
+                const lower = href.toLowerCase();
+                if (lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("mailto:") || lower.startsWith("tel:")) {
+                  openUrl(href).catch(() => {});
+                }
+              }}
+            >
+              <ExternalLink size={13} className="shrink-0 opacity-70" />
+              Open link
             </button>
           </div>
         )}
