@@ -390,7 +390,7 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
               // Extract text from indexable attachments and append to body text
               const attachmentTexts: string[] = [];
               const INDEXABLE_TYPES = new Set([
-                "pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "md",
+                "pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "md", "html", "htm", "eml",
               ]);
               for (const att of attachments) {
                 const ext =
@@ -402,7 +402,8 @@ export async function indexAllMail(options?: { forceReOcr?: boolean }): Promise<
                   ct.includes("wordprocessingml") ||
                   ct.includes("spreadsheetml") ||
                   ct.includes("excel") ||
-                  ct.startsWith("text/");
+                  ct.startsWith("text/") ||
+                  ct.startsWith("message/");
                 if (!indexable) continue;
                 try {
                   const b64 = await loadAttachmentB64(
@@ -524,7 +525,7 @@ export async function extractAllAttachments(
   options?: { forceReOcr?: boolean },
 ): Promise<void> {
   const INDEXABLE_TYPES = new Set([
-    "pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "md",
+    "pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "md", "html", "htm", "eml",
   ]);
 
   interface WorkItem {
@@ -567,7 +568,8 @@ export async function extractAllAttachments(
             ct.includes("wordprocessingml") ||
             ct.includes("spreadsheetml") ||
             ct.includes("excel") ||
-            ct.startsWith("text/")
+            ct.startsWith("text/") ||
+            ct.startsWith("message/")
           );
         });
         if (indexable.length > 0) {
@@ -740,7 +742,7 @@ export async function indexNewArrivals(
     const cfg = buildImapConfig(account, secrets.imapPassword);
 
     const INDEXABLE_TYPES = new Set([
-      "pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "md",
+      "pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "md", "html", "htm", "eml",
     ]);
 
     for (const uid of uids) {
@@ -779,7 +781,8 @@ export async function indexNewArrivals(
             ct.includes("wordprocessingml") ||
             ct.includes("spreadsheetml") ||
             ct.includes("excel") ||
-            ct.startsWith("text/")
+            ct.startsWith("text/") ||
+            ct.startsWith("message/")
           );
         });
         // Get message_id_header — use a folder-scoped DB lookup so we get the

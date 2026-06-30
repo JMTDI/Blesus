@@ -211,6 +211,88 @@ async function extractDocxText(b64: string): Promise<string> {
   return result.value;
 }
 
+function extractEmlText(b64: string): string {
+  const raw = new TextDecoder().decode(b64ToUint8Array(b64));
+
+  // Split headers from body at the first blank line
+  const blankLine = raw.indexOf("\r\n\r\n") !== -1 ? "\r\n\r\n" : "\n\n";
+  const blankIdx = raw.indexOf(blankLine);
+  const headerSection = blankIdx >= 0 ? raw.slice(0, blankIdx) : raw;
+  const bodySection = blankIdx >= 0 ? raw.slice(blankIdx + blankLine.length) : "";
+
+  // Extract useful headers
+  const headerParts: string[] = [];
+  const headerLines = headerSection.replace(/\r\n/g, "\n");
+  for (const field of ["subject", "from", "to", "cc", "date"]) {
+    const match = new RegExp(`^${field}:\\s*(.+(?:\\n[ \\t].+)*)`, "im").exec(headerLines);
+    if (match) headerParts.push(match[1]!.replace(/\n[ \t]+/g, " ").trim());
+  }
+
+  // Detect boundary for multipart messages
+  const boundaryMatch = /boundary=["']?([^"'\r\n;]+)["']?/i.exec(headerSection);
+  const parts: string[] = [...headerParts];
+
+  if (boundaryMatch) {
+    // Multipart: split on the boundary and extract text/* parts
+    const boundary = "--" + boundaryMatch[1]!.trim();
+    const segments = bodySection.split(new RegExp(
+      boundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    ));
+    for (const seg of segments) {
+      const segBlank = seg.indexOf("\r\n\r\n") !== -1 ? "\r\n\r\n" : "\n\n";
+      const segBlankIdx = seg.indexOf(segBlank);
+      if (segBlankIdx < 0) continue;
+      const segHeaders = seg.slice(0, segBlankIdx).toLowerCase();
+      const segBody = seg.slice(segBlankIdx + segBlank.length).trim();
+      if (!segBody) continue;
+
+      if (segHeaders.includes("text/plain")) {
+        parts.push(segBody);
+      } else if (segHeaders.includes("text/html")) {
+        parts.push(
+          segBody
+            .replace(/<style[\s\S]*?<\/style>/gi, " ")
+            .replace(/<script[\s\S]*?<\/script>/gi, " ")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&nbsp;/gi, " ")
+            .replace(/&amp;/gi, "&")
+            .replace(/&lt;/gi, "<")
+            .replace(/&gt;/gi, ">")
+            .replace(/&quot;/gi, '"')
+            .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(parseInt(n, 10)))
+            .replace(/&[a-z]{2,8};/gi, " ")
+            .replace(/\s+/g, " ")
+            .trim(),
+        );
+      }
+    }
+  } else {
+    // Single-part message — use body as-is (likely text/plain)
+    const isHtmlBody = /content-type:\s*text\/html/i.test(headerSection);
+    if (isHtmlBody) {
+      parts.push(
+        bodySection
+          .replace(/<style[\s\S]*?<\/style>/gi, " ")
+          .replace(/<script[\s\S]*?<\/script>/gi, " ")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/gi, " ")
+          .replace(/&amp;/gi, "&")
+          .replace(/&lt;/gi, "<")
+          .replace(/&gt;/gi, ">")
+          .replace(/&quot;/gi, '"')
+          .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(parseInt(n, 10)))
+          .replace(/&[a-z]{2,8};/gi, " ")
+          .replace(/\s+/g, " ")
+          .trim(),
+      );
+    } else {
+      parts.push(bodySection.trim());
+    }
+  }
+
+  return parts.filter(Boolean).join("\n\n");
+}
+
 function extractXlsxText(b64: string): string {
   const bytes = b64ToUint8Array(b64);
   const wb = XLSX.read(bytes, { type: "array" });
@@ -256,8 +338,12 @@ export async function extractAttachmentText(
     ct.includes("excel") ||
     ext === "xlsx" ||
     ext === "xls";
+  const isHtml = ct === "text/html" || ext === "html" || ext === "htm";
+  const isEml = ct === "message/rfc822" || ct === "message/email" || ext === "eml";
   const isText =
-    ct.startsWith("text/") || ["txt", "csv", "md", "json", "xml"].includes(ext);
+    !isHtml &&
+    !isEml &&
+    (ct.startsWith("text/") || ["txt", "csv", "md", "json", "xml"].includes(ext));
 
   try {
     let text: string;
@@ -267,6 +353,23 @@ export async function extractAttachmentText(
       text = await extractDocxText(b64);
     } else if (isXlsx) {
       text = extractXlsxText(b64);
+    } else if (isEml) {
+      text = extractEmlText(b64);
+    } else if (isHtml) {
+      const raw = new TextDecoder().decode(b64ToUint8Array(b64));
+      text = raw
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(parseInt(n, 10)))
+        .replace(/&[a-z]{2,8};/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
     } else if (isText) {
       text = new TextDecoder().decode(b64ToUint8Array(b64));
     } else {

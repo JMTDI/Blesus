@@ -43,10 +43,10 @@ export interface OverallSyncStatus {
  *  is able to extract text from. Kept in sync with INDEXABLE_TYPES in
  *  indexAllMail.ts and extractAttachmentText.ts. */
 const ATTACHABLE_EXTS = new Set([
-  "pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "md",
+  "pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "md", "html", "htm", "eml",
 ]);
 const ATTACHABLE_CT_FRAGMENTS = [
-  "pdf", "wordprocessingml", "msword", "spreadsheetml", "excel", "text/",
+  "pdf", "wordprocessingml", "msword", "spreadsheetml", "excel", "text/", "message/rfc822",
 ];
 
 function attachmentIsIndexable(att: { filename?: string | null; contentType?: string | null }): boolean {
