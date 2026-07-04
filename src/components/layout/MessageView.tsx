@@ -27,6 +27,7 @@ import {
   Search as SearchIcon,
   MailPlus,
   Copy,
+  Printer,
 } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -1319,6 +1320,79 @@ function MessageReplyBar({
 
   const [sendingNew, setSendingNew] = useState(false);
 
+  function triggerPrint(includeHeader: boolean) {
+    const body = bodies[`${message.folderPath}:${message.uid}`];
+    const subject = message.subject || "(no subject)";
+
+    let headerHtml = "";
+    if (includeHeader) {
+      const fromLabel = message.from || "";
+      const toLabel = message.to || "";
+      const dateLabel = message.date ? new Date(message.date * 1000).toLocaleString() : "";
+      headerHtml = `
+        <div style="margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #ccc;font-family:sans-serif;font-size:13px;color:#333">
+          <div><strong>From:</strong> ${fromLabel}</div>
+          <div><strong>To:</strong> ${toLabel}</div>
+          ${message.cc ? `<div><strong>Cc:</strong> ${message.cc}</div>` : ""}
+          <div><strong>Subject:</strong> ${subject}</div>
+          <div><strong>Date:</strong> ${dateLabel}</div>
+        </div>`;
+    }
+
+    let contentHtml: string;
+    if (body?.html) {
+      contentHtml = body.html;
+    } else if (body?.text) {
+      const escaped = body.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      contentHtml = `<pre style="white-space:pre-wrap;font-family:sans-serif;font-size:13px">${escaped}</pre>`;
+    } else {
+      contentHtml = `<p style="font-family:sans-serif;font-size:13px;color:#555">${message.snippet || "No content."}</p>`;
+    }
+
+    const fullHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${subject}</title>
+  <style>
+    body { margin: 24px; font-family: sans-serif; font-size: 13px; color: #111; }
+    img { max-width: 100%; height: auto; }
+    @media print { body { margin: 0; } }
+  </style>
+</head>
+<body>
+  ${headerHtml}
+  ${contentHtml}
+</body>
+</html>`;
+
+    // Use a hidden iframe to trigger print — window.open() is blocked in Tauri
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "none";
+    iframe.style.left = "-9999px";
+    iframe.style.top = "-9999px";
+    document.body.appendChild(iframe);
+
+    const iframeDoc = iframe.contentWindow?.document;
+    if (!iframeDoc) { document.body.removeChild(iframe); return; }
+
+    iframeDoc.open();
+    iframeDoc.write(fullHtml);
+    iframeDoc.close();
+
+    iframe.contentWindow?.focus();
+    iframe.contentWindow?.print();
+
+    // Remove iframe after print dialog closes
+    setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+  }
+
+  const handlePrint = () => triggerPrint(true);
+  const handlePrintBodyOnly = () => triggerPrint(false);
+
   async function handleSendNew() {
     if (!canReply || sendingNew) return;
     setSendingNew(true);
@@ -1569,6 +1643,12 @@ function MessageReplyBar({
       </ReplyButton>
       <ReplyButton onClick={() => void handleSendNew()} disabled={!canReply || sendingNew}>
         {sendingNew ? <Loader2 size={14} className="animate-spin" /> : <MailPlus size={14} />} Send New
+      </ReplyButton>
+      <ReplyButton onClick={handlePrint}>
+        <Printer size={14} /> Print
+      </ReplyButton>
+      <ReplyButton onClick={handlePrintBodyOnly}>
+        <Printer size={14} /> Print Body
       </ReplyButton>
     </div>
   );
