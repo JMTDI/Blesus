@@ -1563,7 +1563,13 @@ export async function upsertMessageSummary(input: UpsertMessageInput): Promise<v
        snippet = excluded.snippet,
        received_at = COALESCE(excluded.received_at, messages.received_at),
        flags = excluded.flags,
-       is_unread = MIN(excluded.is_unread, messages.is_unread),
+       -- The incoming is_unread is derived from the freshly-fetched server
+       -- flags, so it's always ground truth. Using MIN() here created a
+       -- one-way trapdoor: once a message was marked read locally,
+       -- MIN(0, 1) kept is_unread=0 forever, even if the server later
+       -- cleared \Seen (e.g. from another client). Result: the folder
+       -- badge could show N > 0 while the messages table showed 0 unread.
+       is_unread = excluded.is_unread,
        is_starred = COALESCE(excluded.is_starred, messages.is_starred),
        is_important = excluded.is_important,
        has_attachments = MAX(excluded.has_attachments, messages.has_attachments),
