@@ -1225,6 +1225,23 @@ export async function backfillSearchIndexFromMessages(): Promise<number> {
  * Called after a full folder re-index so stale entries for moved/deleted
  * messages stop appearing in search results.
  */
+/** Returns total message count and how many have had their body fetched. */
+export async function getIndexingStats(): Promise<{
+  total: number;
+  indexed: number;
+}> {
+  const db = await getDb();
+  const rows = await db.select<Array<{ total: number; indexed: number }>>(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN body_fetched_at IS NOT NULL THEN 1 ELSE 0 END) AS indexed
+     FROM messages`,
+  );
+  return {
+    total: rows[0]?.total ?? 0,
+    indexed: rows[0]?.indexed ?? 0,
+  };
+}
+
 export async function pruneSearchIndex(
   accountId: number,
   folderPath: string,

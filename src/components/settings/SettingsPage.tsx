@@ -39,6 +39,7 @@ import {
   listRules,
   upsertRule,
   getAllConversationCounts,
+  getIndexingStats,
   listMessagesForFolder,
   pruneSearchIndex,
   type StoredAccount,
@@ -778,12 +779,68 @@ function FullIndexRow() {
   const isCancelled = phase === "cancelled";
   const [confirmForceReOcr, setConfirmForceReOcr] = useState(false);
 
+  // Permanent indexing stats — how many messages are in the DB and how many
+  // have had their body fetched. Refreshed on mount and after each run.
+  const [stats, setStats] = useState<{ total: number; indexed: number } | null>(null);
+
+  async function refreshStats() {
+    try {
+      const s = await getIndexingStats();
+      setStats(s);
+    } catch {
+      // Non-critical — ignore
+    }
+  }
+
+  useEffect(() => {
+    void refreshStats();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Refresh stats whenever a run finishes.
+  useEffect(() => {
+    if (isDone || phase === "cancelled") void refreshStats();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDone, phase]);
+
+  // Persistent-banner state: once a run finishes with any failed bodies,
+  // remember the outstanding count until the user either (a) successfully
+  // runs another pass that clears it, or (b) explicitly dismisses the notice.
+  // Persisted in localStorage so it survives app restarts — the underlying
+  // "unindexed messages" are also persistent, so this reflects reality.
+  const [pendingRetry, setPendingRetry] = useState<number>(() => {
+    try {
+      const v = localStorage.getItem("blesus.indexPending");
+      return v ? Math.max(0, parseInt(v, 10) || 0) : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  function updatePendingRetry(n: number) {
+    setPendingRetry(n);
+    try {
+      if (n > 0) localStorage.setItem("blesus.indexPending", String(n));
+      else localStorage.removeItem("blesus.indexPending");
+    } catch {
+      /* ignore quota errors */
+    }
+  }
+
   useEffect(() => {
     if (isDone) {
       if (bodiesFailed > 0) {
-        toast.error(`Indexed ${bodiesTotal - bodiesFailed} / ${bodiesTotal} messages — ${bodiesFailed} failed`);
+        // Toast with a click-to-retry action so the user can immediately
+        // kick off another pass. Also remember the pending count so the
+        // banner below stays visible after the toast fades.
+        toast.error(
+          `Indexed ${bodiesTotal - bodiesFailed} / ${bodiesTotal} messages — ${bodiesFailed} failed. Click Reindex to retry.`,
+        );
+        updatePendingRetry(bodiesFailed);
       } else {
         toast.success("All mail indexed");
+        // A clean run clears any prior pending-retry notice.
+        updatePendingRetry(0);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -871,6 +928,66 @@ function FullIndexRow() {
         )}
       </div>
     </Row>
+
+    {/* Permanent indexing stats banner — always visible when stats are loaded */}
+    {stats !== null && (
+      <div className="mx-6 mt-1 mb-1 rounded-md border border-[color:var(--border-soft)] bg-[color:var(--bg-sunken)] px-3 py-2 flex items-center gap-2 text-[12px]">
+        <HardDriveDownload size={13} className="text-muted shrink-0" />
+        <span className="text-muted">
+          <span className="text-primary font-medium">{stats.indexed.toLocaleString()}</span>
+          {" / "}
+          <span className="text-primary font-medium">{stats.total.toLocaleString()}</span>
+          {" messages indexed"}
+          {stats.total > 0 && (
+            <span className="text-muted">
+              {" · "}{Math.round((stats.indexed / stats.total) * 100)}% complete
+            </span>
+          )}
+        </span>
+        {stats.indexed < stats.total && !isRunning && (
+          <span className="ml-auto text-[color:var(--accent)] font-medium">
+            {(stats.total - stats.indexed).toLocaleString()} remaining
+          </span>
+        )}
+        {stats.indexed === stats.total && stats.total > 0 && (
+          <span className="ml-auto text-green-600 dark:text-green-400 font-medium flex items-center gap-1">
+            <CheckCircle2 size={12} /> All indexed
+          </span>
+        )}
+      </div>
+    )}
+
+    {/* Persistent retry banner: shown whenever there are messages left un-indexed
+        from a previous run. Auto-clears when a run finishes with 0 failures
+        (see the useEffect above). User can dismiss manually too. */}
+    {pendingRetry > 0 && !isRunning && (
+      <div className="mx-6 mt-1 mb-2 rounded-md border border-[color:var(--border-soft)] bg-[color:rgba(59,130,246,0.06)] px-3 py-2 flex items-start gap-2">
+        <HardDriveDownload size={14} className="text-[color:var(--accent)] mt-0.5 shrink-0" />
+        <div className="flex-1 min-w-0 text-[12px] leading-snug">
+          <span className="text-primary font-medium">
+            {pendingRetry.toLocaleString()} message{pendingRetry === 1 ? "" : "s"} still need indexing
+          </span>
+          <span className="text-muted">
+            {" — "}some fetches failed (rate limits or transient errors). Click <span className="text-primary">Reindex</span> to continue.
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => void indexAllMail()}
+          className="text-[12px] text-accent hover:underline shrink-0"
+        >
+          Reindex
+        </button>
+        <button
+          type="button"
+          onClick={() => updatePendingRetry(0)}
+          className="text-[12px] text-muted hover:text-primary shrink-0"
+          title="Dismiss"
+        >
+          ×
+        </button>
+      </div>
+    )}
 
     <ConfirmDialog
       open={confirmForceReOcr}
