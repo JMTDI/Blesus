@@ -1,4 +1,4 @@
-# Launcher for Cursus dev build. Ensures the Vite dev server is running,
+# Launcher for Blesus dev build. Ensures the Vite dev server is running,
 # then starts the debug binary detached. Safe to run while Vite / the app
 # are already up — it skips the steps that are already done.
 #

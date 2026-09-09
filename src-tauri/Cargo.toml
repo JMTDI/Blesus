@@ -4,8 +4,8 @@ version = "0.2.1"
 description = "Blesus — lightweight cross-platform email client"
 authors = ["Blesus contributors"]
 license = "Apache-2.0"
-repository = "https://github.com/opencursus/cursus"
-homepage = "https://opencursus.app"
+repository = "https://github.com/JMTDI/Blesus"
+homepage = "https://github.com/JMTDI/Blesus"
 edition = "2021"
 rust-version = "1.77.2"
 

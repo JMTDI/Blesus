@@ -2,7 +2,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
 // Use the project's better-sqlite3 if available, otherwise try built-in approach
-const DB_PATH = 'C:/Users/CM/Downloads/cursus-main/cursus-main/src-tauri/target/debug/cursus-files/cursus.db';
+const DB_PATH = 'C:/Users/CM/Downloads/blesus-main/blesus-main/src-tauri/target/debug/blesus-files/blesus.db';
 
 try {
   const Database = require('better-sqlite3');

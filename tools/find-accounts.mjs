@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 
-const wal = readFileSync('src-tauri/target/debug/cursus-files/cursus.db-wal');
-const db  = readFileSync('src-tauri/target/debug/cursus-files/cursus.db');
+const wal = readFileSync('src-tauri/target/debug/blesus-files/blesus.db-wal');
+const db  = readFileSync('src-tauri/target/debug/blesus-files/blesus.db');
 
 function searchAll(buf, label) {
   // Search for email-like patterns that could be account data

@@ -1,7 +1,7 @@
 {
   "productName": "Blesus",
   "version": "0.2.1",
-  "identifier": "com.opencursus.app",
+  "identifier": "com.jmtditech.blesus",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",

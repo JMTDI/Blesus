@@ -7,9 +7,9 @@ body:
     attributes:
       value: |
         Before opening, please skim the **Nevers** list in
-        [DOCUMENTATION/roadmap.md](https://github.com/opencursus/cursus/blob/main/DOCUMENTATION/roadmap.md)
+        [DOCUMENTATION/roadmap.md](https://github.com/JMTDI/Blesus/blob/main/DOCUMENTATION/roadmap.md)
         and the scope rules in
-        [CONTRIBUTING.md](https://github.com/opencursus/cursus/blob/main/CONTRIBUTING.md).
+        [CONTRIBUTING.md](https://github.com/JMTDI/Blesus/blob/main/CONTRIBUTING.md).
         Proposals for AI features, cloud sync, telemetry, calendars, or
         tracking pixels will be closed.
 

@@ -145,10 +145,15 @@ pub fn run() {
     // Menu shortcut. The installer-based bundle gets this for free; the
     // portable .exe doesn't, so we set it up ourselves on every launch.
     #[cfg(windows)]
-    win_notify_setup::ensure_aumid_shortcut("com.opencursus.app", "Cursus");
+    win_notify_setup::ensure_aumid_shortcut("com.jmtditech.blesus", "Blesus");
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
+        // If the user launches the app again while it's already running
+        // (e.g. after autostart minimized it to the tray), bring the
+        // existing window to the front instead of silently doing nothing.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            reveal_main(app);
+        }))
         // async-imap and rustls log raw protocol traces at DEBUG/TRACE that
         // include LOGIN credentials in plaintext. Cap them at WARN so the
         // password can never reach a log file or stdout, regardless of the
@@ -286,7 +291,7 @@ pub fn run() {
             ocr::ocr_page,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Cursus");
+        .expect("error while running Blesus");
 }
 
 fn reveal_main<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {

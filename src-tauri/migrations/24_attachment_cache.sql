@@ -1,6 +1,6 @@
 -- Persistent attachment disk cache tracking table.
 -- Actual bytes are stored as binary files in the attachment-cache/ subfolder
--- next to cursus.db. This table tracks metadata for LRU eviction.
+-- next to blesus.db. This table tracks metadata for LRU eviction.
 CREATE TABLE IF NOT EXISTS attachment_cache (
   account_id   INTEGER NOT NULL,
   folder_path  TEXT    NOT NULL,

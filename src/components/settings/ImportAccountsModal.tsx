@@ -213,7 +213,7 @@ export function ImportAccountsModal({ existing, onClose, onImported }: Props) {
                         {r.entry.email}
                       </div>
                       <div className="text-[11.5px] text-muted">
-                        {r.conflictId != null ? "Already in this Cursus" : "New"}
+                        {r.conflictId != null ? "Already in this Blesus" : "New"}
                       </div>
                     </div>
                     <ActionPicker

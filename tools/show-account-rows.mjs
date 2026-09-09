@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 
-const db = readFileSync('src-tauri/target/debug/cursus-files/cursus.db');
+const db = readFileSync('src-tauri/target/debug/blesus-files/blesus.db');
 
 // Find exact account rows by email
 function findAndShowContext(email, windowSize = 200) {

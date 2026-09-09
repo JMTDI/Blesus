@@ -1,20 +1,24 @@
 // Snooze: a message stays on the server but is hidden from the active
 // folder's thread list until a target unix timestamp passes. The state is
-// encoded as an IMAP custom keyword `Cursus-SnoozedUntil:<unix-ts>` so it
+// encoded as an IMAP custom keyword `Blesus-SnoozedUntil:<unix-ts>` so it
 // survives across devices and across reinstalls. A periodic checker in
 // App.tsx removes the keyword once the timestamp passes, at which point the
 // next sync re-surfaces the message.
 
-const SNOOZE_PREFIX = "Cursus-SnoozedUntil:";
-/** Pre-rename prefix from the "Flow"-era. Read-only — the writer always
+const SNOOZE_PREFIX = "Blesus-SnoozedUntil:";
+/** Pre-rename prefix from the "Cursus"-era. Read-only — the writer always
  *  emits the new prefix. Detection / removal handles both. */
-const LEGACY_SNOOZE_PREFIX = "Flow-SnoozedUntil:";
+const LEGACY_SNOOZE_PREFIX = "Cursus-SnoozedUntil:";
+/** Pre-rename prefix from the "Flow"-era, one rename further back. Same
+ *  read-only treatment. */
+const LEGACY_SNOOZE_PREFIX_2 = "Flow-SnoozedUntil:";
 
 /** Wildcard form passed to `imapSetFlags(..., mode: "remove")` to strip every
  *  snooze keyword on a message regardless of which prefix-era set it. */
 export const SNOOZE_REMOVE_GLOBS: string[] = [
   `${SNOOZE_PREFIX}*`,
   `${LEGACY_SNOOZE_PREFIX}*`,
+  `${LEGACY_SNOOZE_PREFIX_2}*`,
 ];
 
 export function snoozeKeyword(untilUnixSeconds: number): string {
@@ -23,16 +27,19 @@ export function snoozeKeyword(untilUnixSeconds: number): string {
 
 export function isSnoozeFlag(flag: string): boolean {
   return (
-    flag.startsWith(SNOOZE_PREFIX) || flag.startsWith(LEGACY_SNOOZE_PREFIX)
+    flag.startsWith(SNOOZE_PREFIX) ||
+    flag.startsWith(LEGACY_SNOOZE_PREFIX) ||
+    flag.startsWith(LEGACY_SNOOZE_PREFIX_2)
   );
 }
 
 /**
  * Returns the unix-second deadline encoded in any snooze keyword present in
- * the supplied flag list, or null if none. Reads both the current
- * `Cursus-SnoozedUntil:` prefix and the legacy `Flow-SnoozedUntil:` prefix —
- * messages snoozed in older builds keep working after the rename. If
- * multiple snooze keywords are present, the latest deadline wins.
+ * the supplied flag list, or null if none. Reads the current
+ * `Blesus-SnoozedUntil:` prefix plus the legacy `Cursus-SnoozedUntil:` and
+ * `Flow-SnoozedUntil:` prefixes — messages snoozed in older builds keep
+ * working after each rename. If multiple snooze keywords are present, the
+ * latest deadline wins.
  */
 export function getSnoozeUntil(flags: string[]): number | null {
   let max: number | null = null;
@@ -41,6 +48,8 @@ export function getSnoozeUntil(flags: string[]): number | null {
     if (f.startsWith(SNOOZE_PREFIX)) payload = f.slice(SNOOZE_PREFIX.length);
     else if (f.startsWith(LEGACY_SNOOZE_PREFIX))
       payload = f.slice(LEGACY_SNOOZE_PREFIX.length);
+    else if (f.startsWith(LEGACY_SNOOZE_PREFIX_2))
+      payload = f.slice(LEGACY_SNOOZE_PREFIX_2.length);
     if (payload == null) continue;
     const ts = Number(payload);
     if (!Number.isFinite(ts)) continue;

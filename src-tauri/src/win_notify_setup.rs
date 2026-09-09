@@ -63,6 +63,16 @@ fn ensure_aumid_shortcut_inner(aumid: &str, app_name: &str) -> Result<(), String
             .join("Programs");
         std::fs::create_dir_all(&lnk_dir)
             .map_err(|e| format!("create Programs dir: {e}"))?;
+
+        // One-shot cleanup: earlier builds passed the pre-rename app name
+        // ("Cursus") here, which left a stray "Cursus.lnk" Start Menu
+        // shortcut alongside the installer's real "Blesus.lnk" shortcut —
+        // two icons for one app. Remove it now that we always pass "Blesus".
+        if app_name != "Cursus" {
+            let stale_lnk = lnk_dir.join("Cursus.lnk");
+            let _ = std::fs::remove_file(stale_lnk);
+        }
+
         let lnk_path = lnk_dir.join(format!("{app_name}.lnk"));
 
         let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;

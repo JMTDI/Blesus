@@ -148,8 +148,8 @@ interface ThreadsState {
 }
 
 const PAGE_SIZE = 50;
-const MERGE_GROUPS_KEY = "cursus:mergeGroups";
-const STANDALONE_KEY = "cursus:standaloneUids";
+const MERGE_GROUPS_KEY = "blesus:mergeGroups";
+const STANDALONE_KEY = "blesus:standaloneUids";
 
 function loadStandaloneUids(): Record<string, number[]> {
   try {
@@ -236,7 +236,7 @@ function applyMergeGroups(threads: Thread[], groups: string[][], standaloneUids:
 // increments. The next IMAP fetch uses (pageCount - 1) * PAGE_SIZE as offset.
 // Persisted to localStorage so Phase 1 (cold-start DB read) remains fast
 // across app restarts — no need to re-page everything from scratch.
-const PAGE_COUNT_KEY = "cursus:pageCountByFolder";
+const PAGE_COUNT_KEY = "blesus:pageCountByFolder";
 function loadPageCounts(): Map<string, number> {
   try {
     const raw = localStorage.getItem(PAGE_COUNT_KEY);
@@ -496,7 +496,7 @@ function groupSummariesIntoThreads(
   folderId: number,
   isolatedUids?: Set<number>,
 ): Thread[] {
-  // Hide messages whose Cursus-SnoozedUntil deadline is still in the future.
+  // Hide messages whose Blesus-SnoozedUntil deadline is still in the future.
   const visible = summaries.filter((s) => !isSnoozedNow(s.flags));
   const items = visible.map((s) => ({
     uid: s.uid,
@@ -2168,7 +2168,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
       const { config, folderPath } = await sessionFor(thread);
       // Without persisted flags we don't know the exact keyword string;
       // remove the family with a wildcard send. async-imap accepts any
-      // flag string in -FLAGS so we send `Cursus-SnoozedUntil:*` (and the
+      // flag string in -FLAGS so we send `Blesus-SnoozedUntil:*` (and the
       // most servers accept as a literal — failing that the keyword
       // simply stays and gets cleared by the periodic checker once we
       // have flags.
