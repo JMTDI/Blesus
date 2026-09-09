@@ -1,6 +1,6 @@
 {
   "productName": "Blesus",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "identifier": "com.jmtditech.blesus",
   "build": {
     "frontendDist": "../dist",
@@ -44,7 +44,9 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["libayatana-appindicator3-1 | libappindicator3-1"],
+        "depends": [
+          "libayatana-appindicator3-1 | libappindicator3-1"
+        ],
         "desktopTemplate": "linux/desktop.template",
         "files": {
           "usr/share/icons/hicolor/32x32/apps/blesus.png": "icons/32x32.png",
