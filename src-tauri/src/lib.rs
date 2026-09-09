@@ -148,7 +148,12 @@ pub fn run() {
     win_notify_setup::ensure_aumid_shortcut("com.opencursus.app", "Cursus");
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
+        // If the user launches the app again while it's already running
+        // (e.g. after autostart minimized it to the tray), bring the
+        // existing window to the front instead of silently doing nothing.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            reveal_main(app);
+        }))
         // async-imap and rustls log raw protocol traces at DEBUG/TRACE that
         // include LOGIN credentials in plaintext. Cap them at WARN so the
         // password can never reach a log file or stdout, regardless of the
