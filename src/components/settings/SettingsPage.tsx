@@ -1972,7 +1972,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       </div>
       <h3 className="text-[14px] font-semibold text-primary">No accounts yet</h3>
       <p className="text-[12.5px] text-muted max-w-sm mt-1">
-        Add your first mailbox to start sending and receiving from Cursus.
+        Add your first mailbox to start sending and receiving from Blesus.
       </p>
       <Button
         variant="primary"

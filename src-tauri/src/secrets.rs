@@ -1,10 +1,13 @@
 use crate::error::{Error, Result};
 
-const SERVICE: &str = "cursus";
+const SERVICE: &str = "blesus";
 /// Pre-rename service name. We still read from it on `load` and migrate
 /// the value over to the new service the first time it's needed, so users
-/// upgrading from a "flow-mail"-era build don't lose their stored secrets.
-const LEGACY_SERVICE: &str = "flow-mail";
+/// upgrading from a "cursus"-era build don't lose their stored secrets.
+const LEGACY_SERVICE: &str = "cursus";
+/// Pre-rename service name from the "flow-mail"-era build, one rename
+/// further back. Same migrate-on-read treatment.
+const LEGACY_SERVICE_2: &str = "flow-mail";
 
 pub fn save(key: &str, value: &str) -> Result<()> {
     let entry = keyring::Entry::new(SERVICE, key)
@@ -12,10 +15,12 @@ pub fn save(key: &str, value: &str) -> Result<()> {
     entry
         .set_password(value)
         .map_err(|e| Error::Config(format!("keyring set: {e}")))?;
-    // Best-effort cleanup of any value left in the legacy service so the
-    // password isn't stored twice.
-    if let Ok(legacy) = keyring::Entry::new(LEGACY_SERVICE, key) {
-        let _ = legacy.delete_credential();
+    // Best-effort cleanup of any value left in the legacy services so the
+    // password isn't stored multiple times.
+    for legacy_service in [LEGACY_SERVICE, LEGACY_SERVICE_2] {
+        if let Ok(legacy) = keyring::Entry::new(legacy_service, key) {
+            let _ = legacy.delete_credential();
+        }
     }
     Ok(())
 }
@@ -31,20 +36,23 @@ pub fn load(key: &str) -> Result<Option<String>> {
 }
 
 fn load_legacy_and_migrate(key: &str) -> Result<Option<String>> {
-    let legacy = keyring::Entry::new(LEGACY_SERVICE, key)
-        .map_err(|e| Error::Config(format!("keyring new (legacy): {e}")))?;
-    let value = match legacy.get_password() {
-        Ok(v) => v,
-        Err(keyring::Error::NoEntry) => return Ok(None),
-        Err(e) => return Err(Error::Config(format!("keyring get (legacy): {e}"))),
-    };
-    // Promote into the new service. If either side fails, return the value
-    // anyway — losing the secret would be worse than a dangling legacy entry.
-    if let Ok(new_entry) = keyring::Entry::new(SERVICE, key) {
-        let _ = new_entry.set_password(&value);
+    for legacy_service in [LEGACY_SERVICE, LEGACY_SERVICE_2] {
+        let legacy = keyring::Entry::new(legacy_service, key)
+            .map_err(|e| Error::Config(format!("keyring new (legacy): {e}")))?;
+        let value = match legacy.get_password() {
+            Ok(v) => v,
+            Err(keyring::Error::NoEntry) => continue,
+            Err(e) => return Err(Error::Config(format!("keyring get (legacy): {e}"))),
+        };
+        // Promote into the new service. If either side fails, return the value
+        // anyway — losing the secret would be worse than a dangling legacy entry.
+        if let Ok(new_entry) = keyring::Entry::new(SERVICE, key) {
+            let _ = new_entry.set_password(&value);
+        }
+        let _ = legacy.delete_credential();
+        return Ok(Some(value));
     }
-    let _ = legacy.delete_credential();
-    Ok(Some(value))
+    Ok(None)
 }
 
 pub fn delete(key: &str) -> Result<()> {
@@ -54,9 +62,11 @@ pub fn delete(key: &str) -> Result<()> {
             Err(e) => return Err(Error::Config(format!("keyring delete: {e}"))),
         }
     }
-    // Also clean the legacy service so old credentials don't linger.
-    if let Ok(legacy) = keyring::Entry::new(LEGACY_SERVICE, key) {
-        let _ = legacy.delete_credential();
+    // Also clean the legacy services so old credentials don't linger.
+    for legacy_service in [LEGACY_SERVICE, LEGACY_SERVICE_2] {
+        if let Ok(legacy) = keyring::Entry::new(legacy_service, key) {
+            let _ = legacy.delete_credential();
+        }
     }
     Ok(())
 }

@@ -145,7 +145,7 @@ pub fn run() {
     // Menu shortcut. The installer-based bundle gets this for free; the
     // portable .exe doesn't, so we set it up ourselves on every launch.
     #[cfg(windows)]
-    win_notify_setup::ensure_aumid_shortcut("com.opencursus.app", "Cursus");
+    win_notify_setup::ensure_aumid_shortcut("com.opencursus.app", "Blesus");
 
     tauri::Builder::default()
         // If the user launches the app again while it's already running
@@ -291,7 +291,7 @@ pub fn run() {
             ocr::ocr_page,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Cursus");
+        .expect("error while running Blesus");
 }
 
 fn reveal_main<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {

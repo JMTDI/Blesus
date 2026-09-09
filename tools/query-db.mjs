@@ -1,6 +1,6 @@
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const dbPath = 'C:/Users/CM/Downloads/cursus-main/cursus-main/src-tauri/target/debug/cursus-files/cursus.db';
+const dbPath = 'C:/Users/CM/Downloads/blesus-main/blesus-main/src-tauri/target/debug/blesus-files/blesus.db';
 try {
   const db = require('better-sqlite3')(dbPath);
   console.log('=== ACCOUNTS ===');

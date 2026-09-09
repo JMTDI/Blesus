@@ -1412,7 +1412,7 @@ export function PdfViewer({ b64Data, track, initialScale = 1.3 }: { b64Data: str
       const tmp = await tempDir();
       const sep = tmp.endsWith("/") || tmp.endsWith("\\") ? "" : "/";
       const safeName = filename.replace(/[/\\:*?"<>|]/g, "_");
-      const destPath = `${tmp}${sep}cursus-${Date.now()}-${safeName}`;
+      const destPath = `${tmp}${sep}blesus-${Date.now()}-${safeName}`;
       await writeFile(destPath, new Uint8Array(doc.output("arraybuffer") as ArrayBuffer));
       const att: OutgoingAttachment = { filename, path: destPath, contentType: "application/pdf" };
       if (target === "thread") {
@@ -2211,7 +2211,7 @@ export function AttachmentPreviewModal() {
       const tmp = await tempDir();
       const sep = tmp.endsWith("/") || tmp.endsWith("\\") ? "" : "/";
       const safeName = filename.replace(/[/\\:*?"<>|]/g, "_");
-      const destPath = `${tmp}${sep}cursus-${Date.now()}-${attachment.index}-${safeName}`;
+      const destPath = `${tmp}${sep}blesus-${Date.now()}-${attachment.index}-${safeName}`;
       await ipc.imapSaveAttachment(
         {
           host: account.imap_host,
@@ -2729,7 +2729,7 @@ export function ImageGalleryModal() {
       const tmp = await tempDir();
       const sep = tmp.endsWith("/") || tmp.endsWith("\\") ? "" : "/";
       const safeName = filename.replace(/[/\\:*?"<>|]/g, "_");
-      const destPath = `${tmp}${sep}cursus-${Date.now()}-${safeName}`;
+      const destPath = `${tmp}${sep}blesus-${Date.now()}-${safeName}`;
       await writeFile(destPath, bytes);
       const att: OutgoingAttachment = { filename, path: destPath, contentType };
       if (target === "thread") {

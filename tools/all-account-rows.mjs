@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 
-const db = readFileSync('src-tauri/target/debug/cursus-files/cursus.db');
-const wal = readFileSync('src-tauri/target/debug/cursus-files/cursus.db-wal');
+const db = readFileSync('src-tauri/target/debug/blesus-files/blesus.db');
+const wal = readFileSync('src-tauri/target/debug/blesus-files/blesus.db-wal');
 
 // Find ALL occurrences of both account emails and show significant context
 function findAll(buf, label, email) {

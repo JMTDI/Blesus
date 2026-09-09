@@ -104,7 +104,7 @@ async function embedRemoteImages(html: string): Promise<string> {
 // ── Subject exclusions ────────────────────────────────────────────────────────
 // The new exact-match threading largely makes this unnecessary, but kept for
 // any legacy stored exclusion keys.
-const EXCLUSIONS_KEY = "cursus:subjectExclusions";
+const EXCLUSIONS_KEY = "blesus:subjectExclusions";
 type ExclusionMap = Record<string, string[]>;
 
 function loadExclusions(): ExclusionMap {
@@ -1594,7 +1594,7 @@ function MessageReplyBar({
             body.attachments.map(async (att) => {
               const filename = att.filename ?? `attachment-${att.index + 1}`;
               const safeName = filename.replace(/[/\\:*?"<>|]/g, "_");
-              const destPath = `${tmp}${sep}cursus-${stamp}-${att.index}-${safeName}`;
+              const destPath = `${tmp}${sep}blesus-${stamp}-${att.index}-${safeName}`;
               await ipc.imapSaveAttachment(cfg, message.folderPath, message.uid, att.index, destPath);
               return {
                 filename,
@@ -2069,7 +2069,7 @@ function AttachmentChip({
       const tmp = await tempDir();
       const sep = tmp.endsWith("/") || tmp.endsWith("\\") ? "" : "/";
       const safeName = display.replace(/[/\\:*?"<>|]/g, "_");
-      const destPath = `${tmp}${sep}cursus-${Date.now()}-${attachment.index}-${safeName}`;
+      const destPath = `${tmp}${sep}blesus-${Date.now()}-${attachment.index}-${safeName}`;
       await ipc.imapSaveAttachment(
         { host: account.imap_host, port: account.imap_port, username: account.imap_username ?? account.email, password: secrets.imapPassword, security: account.imap_security },
         folderPath, uid, attachment.index, destPath,

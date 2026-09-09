@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 
-const buf = readFileSync('C:/Users/CM/Downloads/cursus-main/cursus-main/src-tauri/target/debug/cursus-files/cursus.db');
-const wal = readFileSync('C:/Users/CM/Downloads/cursus-main/cursus-main/src-tauri/target/debug/cursus-files/cursus.db-wal');
+const buf = readFileSync('C:/Users/CM/Downloads/blesus-main/blesus-main/src-tauri/target/debug/blesus-files/blesus.db');
+const wal = readFileSync('C:/Users/CM/Downloads/blesus-main/blesus-main/src-tauri/target/debug/blesus-files/blesus.db-wal');
 
 // Find the accounts section - look for email addresses and their nearby signature_html
 // We'll dump a range around account IDs 1 and 2

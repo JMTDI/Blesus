@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 
-const buf = readFileSync('C:/Users/CM/Downloads/cursus-main/cursus-main/src-tauri/target/debug/cursus-files/cursus.db');
-const wal = readFileSync('C:/Users/CM/Downloads/cursus-main/cursus-main/src-tauri/target/debug/cursus-files/cursus.db-wal');
+const buf = readFileSync('C:/Users/CM/Downloads/blesus-main/blesus-main/src-tauri/target/debug/blesus-files/blesus.db');
+const wal = readFileSync('C:/Users/CM/Downloads/blesus-main/blesus-main/src-tauri/target/debug/blesus-files/blesus.db-wal');
 
 function searchBuf(b, label) {
   const terms = ['Main Account', 'Send Via', 'Send via', 'signature_html'];

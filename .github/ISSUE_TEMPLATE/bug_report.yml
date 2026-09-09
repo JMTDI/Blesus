@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a defect in Cursus.
+description: Report a defect in Blesus.
 title: "[bug] "
 labels: ["bug"]
 body:
@@ -12,7 +12,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Cursus version
+      label: Blesus version
       description: Settings → About, or the commit hash if built from source.
       placeholder: "v0.1.0"
     validations:
@@ -62,7 +62,7 @@ body:
     attributes:
       label: Logs
       description: |
-        From the Cursus log output if available. Strip passwords and
+        From the Blesus log output if available. Strip passwords and
         third-party message contents.
       render: shell
 
