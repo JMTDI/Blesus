@@ -10,6 +10,8 @@ mod parser;
 mod secrets;
 mod smtp;
 #[cfg(windows)]
+mod webview2_check;
+#[cfg(windows)]
 mod win_notify_setup;
 
 pub use error::{Error, Result};
@@ -20,9 +22,11 @@ use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
+    webview::NewWindowResponse,
+    Manager, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::imap::idle::IdleManager;
 
@@ -129,6 +133,13 @@ fn is_tray_available(app: tauri::AppHandle) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Fail loudly (via a message box) instead of silently if the Microsoft
+    // Edge WebView2 Runtime isn't installed — without it, wry can't create
+    // the window at all and this "windows" subsystem build has no console
+    // to show the resulting error on.
+    #[cfg(windows)]
+    webview2_check::ensure_present();
+
     let data_dir = resolve_data_dir();
     let db_path = data_dir.join("blesus.db");
     // SQLx's sqlite URL parser accepts forward slashes on Windows; normalise
@@ -197,6 +208,31 @@ pub fn run() {
         .manage(DbUrl(db_url.clone()))
         .manage(LogsDir(logs_dir.clone()))
         .setup(|app| {
+            // The "main" window is declared with `"create": false` in
+            // tauri.conf.json so we can build it here and attach
+            // `on_new_window`. Email bodies render in a sandboxed iframe with
+            // `<base target="_blank">`, so every link click is a "new
+            // window" request at the webview level. Without a handler
+            // registered, WebView2 (Windows) and WebKitGTK (Linux) both
+            // silently swallow that request instead of doing anything,
+            // which is why links appeared to do nothing when clicked.
+            // Deny the in-app popup and forward the URL to the OS default
+            // browser/handler instead.
+            let window_config = app.config().app.windows[0].clone();
+            let opener_handle = app.handle().clone();
+            WebviewWindowBuilder::from_config(app, &window_config)?
+                .on_new_window(move |url, _features| {
+                    let scheme = url.scheme();
+                    if matches!(scheme, "http" | "https" | "mailto" | "tel") {
+                        if let Err(err) = opener_handle.opener().open_url(url.to_string(), None::<&str>)
+                        {
+                            log::warn!("Failed to open external link {url}: {err}");
+                        }
+                    }
+                    NewWindowResponse::Deny
+                })
+                .build()?;
+
             // System tray is optional: on Linux desktops without StatusNotifierItem
             // support (e.g. stock GNOME/Wayland without the AppIndicator extension)
             // TrayIconBuilder::build will fail. We log a warning and continue so
