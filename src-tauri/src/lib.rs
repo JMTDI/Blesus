@@ -220,7 +220,7 @@ pub fn run() {
             // browser/handler instead.
             let window_config = app.config().app.windows[0].clone();
             let opener_handle = app.handle().clone();
-            WebviewWindowBuilder::from_config(app, &window_config)?
+            let webview_build_result = WebviewWindowBuilder::from_config(app, &window_config)?
                 .on_new_window(move |url, _features| {
                     let scheme = url.scheme();
                     if matches!(scheme, "http" | "https" | "mailto" | "tel") {
@@ -231,7 +231,24 @@ pub fn run() {
                     }
                     NewWindowResponse::Deny
                 })
-                .build()?;
+                .build();
+
+            // Tauri's built-in `webview_runtime_installed` pre-check (which
+            // asks the WebView2 loader for an available browser version)
+            // can pass while the webview still fails to actually spin up —
+            // e.g. a corrupted/partially-uninstalled Evergreen runtime, a
+            // stale `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` env var, or a cloud
+            // sync client (OneDrive/iCloud/pCloud) locking files under
+            // `%LOCALAPPDATA%` while WebView2 tries to create its user data
+            // folder there. Because Blesus is built with
+            // `#![windows_subsystem = "windows"]`, there is no console to
+            // show that failure on, so the app previously either panicked
+            // invisibly or appeared to do nothing. Surface it explicitly.
+            #[cfg(windows)]
+            if let Err(err) = &webview_build_result {
+                webview2_check::report_webview_creation_failure(err);
+            }
+            webview_build_result?;
 
             // System tray is optional: on Linux desktops without StatusNotifierItem
             // support (e.g. stock GNOME/Wayland without the AppIndicator extension)

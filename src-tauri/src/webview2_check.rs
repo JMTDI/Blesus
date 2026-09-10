@@ -137,3 +137,57 @@ fn show_missing_runtime_dialog() {
 
     std::process::exit(1);
 }
+
+/// Shown when the main window's webview fails to actually spin up even
+/// though `ensure_present` above found a registered WebView2 Runtime.
+///
+/// This happens because our (and Tauri's own) pre-flight checks only ask
+/// the loader for an available browser *version string*; they don't
+/// verify that WebView2 can actually launch its browser process and write
+/// to its user data folder. Known causes, gathered from Tauri/WebView2
+/// bug trackers, that pass the version check but still fail here:
+///   - A partially uninstalled or corrupted Evergreen runtime (registry
+///     still has a `pv` value, but the runtime's own files are gone).
+///   - A stale `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` environment variable
+///     pointing at a path that no longer has the runtime in it.
+///   - A cloud-sync client (OneDrive, iCloud Drive, pCloud, ...) or an
+///     antivirus's "controlled folder access" locking/blocking file
+///     creation under `%LOCALAPPDATA%`, where WebView2 keeps its per-app
+///     user data folder (`EBWebView`).
+///   - WebView2 registered for a different Windows user account than the
+///     one currently running Blesus.
+///
+/// Because Blesus is built with `#![windows_subsystem = "windows"]`,
+/// there's no console for the underlying error to print to, so without
+/// this dialog the app either panics invisibly or the window never
+/// appears with no indication why. `err` is included so the exact
+/// HRESULT/message is visible for support requests.
+pub fn report_webview_creation_failure<E: std::fmt::Display>(err: &E) {
+    log::error!("failed to create the main webview: {err}");
+
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            &HSTRING::from(format!(
+                "Blesus couldn't start its window component (Microsoft Edge WebView2).\n\n\
+                 Error: {err}\n\n\
+                 Things to try:\n\
+                 \u{2022} Repair the WebView2 Runtime: Settings > Apps > Installed apps > \
+                 \"Microsoft Edge WebView2 Runtime\" > Modify > Repair (or download the \
+                 installer from https://developer.microsoft.com/microsoft-edge/webview2/ \
+                 and run it again).\n\
+                 \u{2022} Check whether a WEBVIEW2_BROWSER_EXECUTABLE_FOLDER environment \
+                 variable is set to a folder that no longer exists, and remove it.\n\
+                 \u{2022} If a cloud sync tool (OneDrive, iCloud Drive, pCloud, etc.) or an \
+                 antivirus is syncing/blocking your AppData\\Local folder, pause it and \
+                 try again.\n\n\
+                 Relaunch Blesus once you've tried one of these."
+            )),
+            &HSTRING::from("Blesus \u{2014} failed to start"),
+            MB_ICONERROR | MB_OK,
+        );
+    }
+
+    std::process::exit(1);
+}
+
