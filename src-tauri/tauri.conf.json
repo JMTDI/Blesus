@@ -44,6 +44,11 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      }
+    },
     "linux": {
       "deb": {
         "depends": [
