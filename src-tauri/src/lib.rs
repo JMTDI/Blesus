@@ -10,6 +10,8 @@ mod parser;
 mod secrets;
 mod smtp;
 #[cfg(windows)]
+mod webview2_check;
+#[cfg(windows)]
 mod win_notify_setup;
 
 pub use error::{Error, Result};
@@ -129,6 +131,13 @@ fn is_tray_available(app: tauri::AppHandle) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Fail loudly (via a message box) instead of silently if the Microsoft
+    // Edge WebView2 Runtime isn't installed — without it, wry can't create
+    // the window at all and this "windows" subsystem build has no console
+    // to show the resulting error on.
+    #[cfg(windows)]
+    webview2_check::ensure_present();
+
     let data_dir = resolve_data_dir();
     let db_path = data_dir.join("blesus.db");
     // SQLx's sqlite URL parser accepts forward slashes on Windows; normalise

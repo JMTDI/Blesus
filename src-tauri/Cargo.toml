@@ -73,6 +73,7 @@ windows = { version = "0.58", features = [
   "Win32_System_Com_StructuredStorage",
   "Win32_Storage_EnhancedStorage",
   "Win32_Foundation",
+  "Win32_System_LibraryLoader",
   "Graphics_Imaging",
   "Media_Ocr",
   "Storage_Streams",
