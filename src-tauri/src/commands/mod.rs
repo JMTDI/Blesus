@@ -467,7 +467,7 @@ pub async fn attachment_cache_read(
     use base64::Engine;
     let logs_dir = &state.0;
     let cache_dir = logs_dir.parent().unwrap_or(logs_dir).join("attachment-cache");
-    let path = cache_dir.join(&file_name);
+    let path = cache_path(&cache_dir, &file_name)?;
     let bytes = tokio::task::spawn_blocking(move || std::fs::read(&path))
         .await
         .map_err(|e| crate::Error::Imap(format!("spawn_blocking: {e}")))?
@@ -490,7 +490,7 @@ pub async fn attachment_cache_write(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&b64)
         .map_err(|e| crate::Error::Imap(format!("base64 decode: {e}")))?;
-    let path = cache_dir.join(&file_name);
+    let path = cache_path(&cache_dir, &file_name)?;
     tokio::task::spawn_blocking(move || std::fs::write(&path, &bytes))
         .await
         .map_err(|e| crate::Error::Imap(format!("spawn_blocking: {e}")))?
@@ -507,7 +507,7 @@ pub async fn attachment_cache_delete(
 ) -> Result<()> {
     let logs_dir = &state.0;
     let cache_dir = logs_dir.parent().unwrap_or(logs_dir).join("attachment-cache");
-    let path = cache_dir.join(&file_name);
+    let path = cache_path(&cache_dir, &file_name)?;
     tokio::task::spawn_blocking(move || {
         if path.exists() {
             std::fs::remove_file(&path)
@@ -517,4 +517,13 @@ pub async fn attachment_cache_delete(
     })
     .await
     .map_err(|e| crate::Error::Imap(format!("spawn_blocking: {e}")))?
+}
+
+/// Rejects file names that could escape the attachment cache directory.
+fn cache_path(cache_dir: &std::path::Path, file_name: &str) -> Result<std::path::PathBuf> {
+    let mut comps = std::path::Path::new(file_name).components();
+    match (comps.next(), comps.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(cache_dir.join(file_name)),
+        _ => Err(crate::Error::Config(format!("invalid cache file name: {file_name}"))),
+    }
 }
