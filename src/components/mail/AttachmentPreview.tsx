@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, type CSSProperties } from "react";
+import DOMPurify from "dompurify";
 import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerCode from "pdfjs-dist/build/pdf.worker.min.mjs?raw";
@@ -1966,9 +1967,9 @@ function DocxViewer({ b64Data, filename, onDownload }: { b64Data: string; filena
             fontSize: 11,
             lineHeight: 1.6,
           }}
-          // mammoth output is sanitized (no scripts, just formatting HTML)
+          // sanitized with DOMPurify since attachments are untrusted
           // eslint-disable-next-line react/no-danger
-          dangerouslySetInnerHTML={{ __html: html }}
+          dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }}
         />
       </div>
     </div>
@@ -2091,9 +2092,9 @@ function SpreadsheetViewer({ b64Data }: { b64Data: string }) {
             font-weight: 600;
           }
         `}</style>
-        {/* SheetJS output is a sanitized table — no scripts */}
+        {/* sanitized with DOMPurify since attachments are untrusted */}
         {/* eslint-disable-next-line react/no-danger */}
-        <div dangerouslySetInnerHTML={{ __html: sheets[activeSheet]?.html ?? "" }} className="p-4" />
+        <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(sheets[activeSheet]?.html ?? "") }} className="p-4" />
       </div>
     </div>
   );

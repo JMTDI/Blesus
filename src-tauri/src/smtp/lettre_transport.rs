@@ -178,10 +178,13 @@ pub fn build_message(outgoing: &OutgoingMessage) -> Result<Message> {
         .parse()
         .map_err(|e| Error::Smtp(format!("parse from: {e}")))?;
 
-    let encoded_subject = encode_subject_rfc2047(&outgoing.subject);
+    // The header is written pre-encoded, so strip line breaks to prevent
+    // header injection via the subject.
+    let subject: String = outgoing.subject.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    let encoded_subject = encode_subject_rfc2047(&subject);
     let subject_hv = HeaderValue::dangerous_new_pre_encoded(
         HeaderName::new_from_ascii_str("Subject"),
-        outgoing.subject.clone(),
+        subject,
         encoded_subject,
     );
     let mut builder: MessageBuilder = Message::builder().from(from).raw_header(subject_hv);

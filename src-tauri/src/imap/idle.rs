@@ -95,7 +95,7 @@ impl IdleManager {
                     Ok(IdleOutcome::Cancelled) => {
                         // Manager asked us to stop. Drop our slot in the
                         // map and exit.
-                        manager.handles.lock().await.remove(&key);
+                        manager.release(&key, &cancel).await;
                         return;
                     }
                     Err(e) => {
@@ -105,7 +105,7 @@ impl IdleManager {
                         tokio::select! {
                             _ = tokio::time::sleep(RETRY_BACKOFF) => {}
                             _ = cancel.notified() => {
-                                manager.handles.lock().await.remove(&key);
+                                manager.release(&key, &cancel).await;
                                 return;
                             }
                         }
@@ -115,10 +115,19 @@ impl IdleManager {
         });
     }
 
+    /// Remove our slot only if it still belongs to this session — a restart
+    /// for the same key may already have registered a newer one.
+    async fn release(&self, key: &str, mine: &Arc<Notify>) {
+        let mut handles = self.handles.lock().await;
+        if handles.get(key).is_some_and(|h| Arc::ptr_eq(h, mine)) {
+            handles.remove(key);
+        }
+    }
+
     pub async fn stop(&self, key: &str) {
         if let Some(notify) = self.handles.lock().await.remove(key) {
-            // Signal any awaiter inside the IDLE select! to break out.
-            notify.notify_waiters();
+            // Store a permit so the task stops even if it is not awaiting right now.
+            notify.notify_one();
         }
     }
 
